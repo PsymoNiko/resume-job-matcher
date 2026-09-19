@@ -170,7 +170,7 @@ export interface StageStatus {
   error_message?: string;
 }
 
-export type AuthProviderType = 'email' | 'github' | 'google';
+export type AuthProviderType = 'email' | 'github' | 'google' | 'telegram';
 
 export interface UserAccount {
   id: string;
@@ -179,6 +179,11 @@ export interface UserAccount {
   auth_provider: AuthProviderType;
   avatar_url?: string;
   github_username?: string;
+  role?: string;
+  free_tries_used?: number;
+  unlimited_until?: number;
+  ton_wallet_address?: string;
+  telegram_id?: number | string;
   created_at: number;
 }
 
@@ -263,4 +268,78 @@ export interface DatabaseConfigStatus {
     has_db_ssl?: boolean;
   };
 }
+
+// Telegram Direct Web App (DWApp) Context Types
+export interface TelegramWebAppUser {
+  id: number;
+  first_name: string;
+  last_name?: string;
+  username?: string;
+  language_code?: string;
+  photo_url?: string;
+  is_premium?: boolean;
+}
+
+export interface TelegramDWAppState {
+  isAvailable: boolean;
+  platform: string;
+  version: string;
+  colorScheme: 'dark' | 'light';
+  user: TelegramWebAppUser | null;
+  initData: string;
+}
+
+// TON Cryptocurrency Wallet & Billing Types
+export interface TonWalletAccount {
+  address: string;
+  rawAddress?: string;
+  walletName?: string;
+  chain?: string;
+  icon?: string;
+}
+
+export interface TonBillingConfig {
+  recipientWallet: string;
+  usdtJettonMaster: string;
+  dailyPassUsdtPrice: number;
+  dailyPassTonPrice: number;
+  network: 'mainnet' | 'testnet';
+  adminEmail: string;
+}
+
+export interface TonPaymentOrder {
+  orderId: string;
+  userId: string;
+  amountUsdt: number;
+  amountTon: number;
+  selectedCurrency: 'USDT' | 'TON';
+  recipientAddress: string;
+  commentMemo: string;
+  deepLinkTonkeeper?: string;
+  deepLinkTelegramWallet?: string;
+  status: 'pending' | 'verifying' | 'paid' | 'expired';
+  createdAt: number;
+  expiresAt: number;
+  txHash?: string;
+}
+
+export interface UserQuotaState {
+  isAdmin: boolean;
+  isUnlimited: boolean;
+  freeTriesTotal: number;
+  freeTriesUsed: number;
+  freeTriesRemaining: number;
+  dailyPassActive: boolean;
+  dailyPassExpiresAt?: number;
+  dailyPassHoursRemaining?: number;
+  tonWalletAddress?: string;
+  paymentHistory?: {
+    orderId: string;
+    amount: string;
+    currency: 'USDT' | 'TON';
+    paidAt: number;
+    txHash?: string;
+  }[];
+}
+
 

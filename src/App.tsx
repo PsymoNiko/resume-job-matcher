@@ -10,6 +10,7 @@ import { ProfileFillingModal } from './components/ProfileFillingModal';
 import { ExperienceManagerModal } from './components/ExperienceManagerModal';
 import { AIModelSettingsModal } from './components/AIModelSettingsModal';
 import { DatabaseSettingsModal } from './components/DatabaseSettingsModal';
+import { TonBillingModal } from './components/TonBillingModal';
 import { 
   GitHubProfileData, 
   MasterProfile, 
@@ -21,8 +22,11 @@ import {
   UserAccount,
   UserProfileInfo,
   UserExperienceItem,
-  AIConfigSettings
+  AIConfigSettings,
+  TelegramDWAppState,
+  UserQuotaState
 } from './types';
+import { initTelegramDWApp, triggerTelegramHaptic } from './utils/telegram';
 import { SAMPLE_PROFILES, SAMPLE_JOB_DESCRIPTIONS } from './data/presets';
 import { 
   Terminal, 
@@ -60,6 +64,72 @@ export default function App() {
   const [aiModalOpen, setAiModalOpen] = useState<boolean>(false);
   const [dbModalOpen, setDbModalOpen] = useState<boolean>(false);
   const [architectureModalOpen, setArchitectureModalOpen] = useState<boolean>(false);
+  const [billingModalOpen, setBillingModalOpen] = useState<boolean>(false);
+
+  // Telegram DWApp and TON Network Cryptocurrency Quota/Billing State
+  const [dwappState, setDwappState] = useState<TelegramDWAppState>(() => initTelegramDWApp());
+  const [quota, setQuota] = useState<UserQuotaState | null>(null);
+
+  // Helper to fetch user's TON quota and pass status
+  const fetchUserQuota = async (userIdOverride?: string) => {
+    try {
+      const activeId =
+        userIdOverride ||
+        currentUser?.id ||
+        localStorage.getItem('resume_job_matcher_auth_token') ||
+        'guest_user_default';
+      const res = await fetch('/api/ton/user-quota', {
+        headers: { 'x-user-id': activeId },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setQuota(data.quota);
+      }
+    } catch (err) {
+      console.error('Failed to fetch user quota:', err);
+    }
+  };
+
+  // Auto-authenticate when running inside Telegram Direct Web App (DWApp)
+  useEffect(() => {
+    const initTelegramAuth = async () => {
+      if (dwappState.isAvailable && dwappState.user) {
+        const tgUser = dwappState.user;
+        try {
+          const res = await fetch('/api/auth/telegram', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              telegram_id: tgUser.id,
+              first_name: tgUser.first_name,
+              last_name: tgUser.last_name,
+              username: tgUser.username,
+              photo_url: tgUser.photo_url,
+            }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.user) {
+              setCurrentUser(data.user);
+              localStorage.setItem('resume_job_matcher_auth_user', JSON.stringify(data.user));
+              localStorage.setItem('resume_job_matcher_auth_token', data.user.id);
+              if (data.profile) setUserProfile(data.profile);
+              if (data.quota) setQuota(data.quota);
+              triggerTelegramHaptic('light');
+              addLog(1, `Telegram DWApp auto-authenticated as @${tgUser.username || tgUser.first_name} (ID: ${tgUser.id}).`, 'success');
+              return;
+            }
+          }
+        } catch (err) {
+          console.error('Telegram auto-authentication failed:', err);
+        }
+      }
+      // Otherwise fetch quota for current user or guest
+      fetchUserQuota();
+    };
+
+    initTelegramAuth();
+  }, [dwappState.isAvailable, dwappState.user?.id]);
 
   // Custom AI Configuration (Gemini, OpenAI, Claude, DeepSeek, or Self-Hosted)
   const [aiConfig, setAiConfig] = useState<AIConfigSettings>(() => {
@@ -281,6 +351,21 @@ export default function App() {
     addLog(1, `Synced ${items.length} GitHub repositories to experiences list.`, 'success');
   };
 
+  // Quota Guard Helper: Checks if user has free tries remaining, 24h pass, or admin access
+  const checkQuotaOrPrompt = (stageNum: PipelineStage = 2): boolean => {
+    if (quota && !quota.isAdmin && !quota.dailyPassActive && quota.freeTriesRemaining <= 0) {
+      triggerTelegramHaptic('warning');
+      addLog(
+        stageNum,
+        'Free quota limit reached (3 of 3 tries used). 1 USDT on TON Network required for 24-hour unlimited pass.',
+        'error'
+      );
+      setBillingModalOpen(true);
+      return false;
+    }
+    return true;
+  };
+
   // Stage 1: Trigger GitHub Extraction
   const handleTriggerExtraction = async (options: { token?: string; username?: string }) => {
     setIsLoading(true);
@@ -327,6 +412,10 @@ export default function App() {
       return;
     }
 
+    if (!checkQuotaOrPrompt(2)) {
+      return;
+    }
+
     setIsLoading(true);
     setStagesStatus((prev) => ({
       ...prev,
@@ -350,6 +439,13 @@ export default function App() {
       });
 
       const data = await response.json();
+      if (response.status === 402 || data.error === 'QUOTA_EXCEEDED') {
+        if (data.quota) setQuota(data.quota);
+        setBillingModalOpen(true);
+        triggerTelegramHaptic('warning');
+        throw new Error(data.message || 'Free tries limit reached. 1 USDT on TON Network required for 24-hour daily pass.');
+      }
+
       if (!response.ok) {
         throw new Error(data.error || 'Synthesis failed');
       }
@@ -363,6 +459,7 @@ export default function App() {
         ? ` [Engine: ${data.meta.engine} - auto-recovered]`
         : ` [Engine: ${data.meta?.engine || aiConfig.model}]`;
       addLog(2, `Master Profile generated for ${data.master_profile.candidate_name}${engineNote}: ${data.master_profile.projects?.length || 0} projects & ${data.master_profile.suggested_bullet_points?.length || 0} bullets.`, 'success');
+      fetchUserQuota();
     } catch (err: any) {
       setStagesStatus((prev) => ({
         ...prev,
@@ -379,6 +476,10 @@ export default function App() {
   const handleTriggerMatch = async () => {
     if (!masterProfile || !jobDescription.trim()) {
       addLog(3, 'Cannot match: Master Profile or Job Description missing.', 'error');
+      return;
+    }
+
+    if (!checkQuotaOrPrompt(3)) {
       return;
     }
 
@@ -405,6 +506,13 @@ export default function App() {
       });
 
       const data = await response.json();
+      if (response.status === 402 || data.error === 'QUOTA_EXCEEDED') {
+        if (data.quota) setQuota(data.quota);
+        setBillingModalOpen(true);
+        triggerTelegramHaptic('warning');
+        throw new Error(data.message || 'Free tries limit reached. 1 USDT on TON Network required for 24-hour daily pass.');
+      }
+
       if (!response.ok) {
         throw new Error(data.error || 'Job matching failed');
       }
@@ -418,6 +526,7 @@ export default function App() {
         ? ` [Engine: ${data.meta.engine} - auto-recovered]`
         : ` [Engine: ${data.meta?.engine || aiConfig.model}]`;
       addLog(3, `Job Match Score: ${data.match_analysis.match_score}%${engineNote}. Identified ${data.match_analysis.matching_keywords?.length || 0} matching keywords and ${data.match_analysis.missing_skills?.length || 0} gaps.`, 'success');
+      fetchUserQuota();
     } catch (err: any) {
       setStagesStatus((prev) => ({
         ...prev,
@@ -434,6 +543,10 @@ export default function App() {
   const handleDirectMatchAndGenerateResume = async () => {
     if (!masterProfile) {
       addLog(3, 'Master profile required before matching & generating resume.', 'error');
+      return;
+    }
+
+    if (!checkQuotaOrPrompt(3)) {
       return;
     }
 
@@ -463,6 +576,13 @@ export default function App() {
         });
 
         const matchData = await matchRes.json();
+        if (matchRes.status === 402 || matchData.error === 'QUOTA_EXCEEDED') {
+          if (matchData.quota) setQuota(matchData.quota);
+          setBillingModalOpen(true);
+          triggerTelegramHaptic('warning');
+          throw new Error(matchData.message || 'Free quota limit reached. 1 USDT on TON Network required.');
+        }
+
         if (!matchRes.ok) {
           throw new Error(matchData.error || 'Job matching failed');
         }
@@ -474,6 +594,7 @@ export default function App() {
           3: { stage: 3, status: 'completed', completed_at: Date.now() },
         }));
         addLog(3, `Job alignment score: ${currentMatch?.match_score}%. Proceeding directly to resume synthesis...`, 'success');
+        fetchUserQuota();
       }
 
       // Step 2: Proceed immediately to Stage 4 Tailored Resume Generation
@@ -505,6 +626,13 @@ export default function App() {
       });
 
       const resumeData = await resumeRes.json();
+      if (resumeRes.status === 402 || resumeData.error === 'QUOTA_EXCEEDED') {
+        if (resumeData.quota) setQuota(resumeData.quota);
+        setBillingModalOpen(true);
+        triggerTelegramHaptic('warning');
+        throw new Error(resumeData.message || 'Free quota limit reached. 1 USDT on TON Network required.');
+      }
+
       if (!resumeRes.ok) {
         throw new Error(resumeData.error || 'Resume generation failed');
       }
@@ -518,6 +646,7 @@ export default function App() {
         ? ` [Engine: ${resumeData.meta.engine} - auto-recovered]`
         : ` [Engine: ${resumeData.meta?.engine || aiConfig.model}]`;
       addLog(4, `Tailored ATS Resume created${engineNote} (ATS Score: ${resumeData.tailored_resume.ats_audit?.overall_ats_score || 95}%).`, 'success');
+      fetchUserQuota();
     } catch (err: any) {
       addLog(3, `Error in 1-Click Match & Resume: ${err.message}`, 'error');
     } finally {
@@ -534,6 +663,10 @@ export default function App() {
   }) => {
     if (!masterProfile || !matchAnalysis) {
       addLog(4, 'Cannot generate resume: Master Profile or Match Analysis missing.', 'error');
+      return;
+    }
+
+    if (!checkQuotaOrPrompt(4)) {
       return;
     }
 
@@ -562,6 +695,13 @@ export default function App() {
       });
 
       const data = await response.json();
+      if (response.status === 402 || data.error === 'QUOTA_EXCEEDED') {
+        if (data.quota) setQuota(data.quota);
+        setBillingModalOpen(true);
+        triggerTelegramHaptic('warning');
+        throw new Error(data.message || 'Free quota limit reached. 1 USDT on TON Network required.');
+      }
+
       if (!response.ok) {
         throw new Error(data.error || 'Resume generation failed');
       }
@@ -575,6 +715,7 @@ export default function App() {
         ? ` [Engine: ${data.meta.engine} - auto-recovered]`
         : ` [Engine: ${data.meta?.engine || aiConfig.model}]`;
       addLog(4, `Tailored ATS Resume compiled${engineNote} with overall ATS score: ${data.tailored_resume.ats_audit?.overall_ats_score || 95}%. Anti-hallucination audit verified.`, 'success');
+      fetchUserQuota();
     } catch (err: any) {
       setStagesStatus((prev) => ({
         ...prev,
@@ -589,6 +730,10 @@ export default function App() {
 
   // Full Autonomous Pipeline Runner
   const handleRunAutonomousPipeline = async () => {
+    if (!checkQuotaOrPrompt(1)) {
+      return;
+    }
+
     setIsAutonomousRunning(true);
     addLog(1, `🚀 Starting Full Autonomous 4-Stage Pipeline with ${aiConfig.provider.toUpperCase()} (${aiConfig.model})...`, 'info');
 
@@ -629,6 +774,12 @@ export default function App() {
         }),
       });
       const synthData = await synthRes.json();
+      if (synthRes.status === 402 || synthData.error === 'QUOTA_EXCEEDED') {
+        if (synthData.quota) setQuota(synthData.quota);
+        setBillingModalOpen(true);
+        triggerTelegramHaptic('warning');
+        throw new Error(synthData.message || 'Free quota limit reached. 1 USDT on TON Network required.');
+      }
       if (!synthRes.ok) throw new Error(synthData.error || 'Stage 2 Synthesis failed');
 
       const activeMasterProfile = synthData.master_profile;
@@ -638,6 +789,7 @@ export default function App() {
         2: { stage: 2, status: 'completed', completed_at: Date.now() },
       }));
       addLog(2, `Stage 2 Complete: Master Profile synthesized (${activeMasterProfile.projects?.length || 0} projects).`, 'success');
+      fetchUserQuota();
 
       // Stage 3: Job Matcher
       setCurrentStage(3);
@@ -660,6 +812,12 @@ export default function App() {
         }),
       });
       const matchData = await matchRes.json();
+      if (matchRes.status === 402 || matchData.error === 'QUOTA_EXCEEDED') {
+        if (matchData.quota) setQuota(matchData.quota);
+        setBillingModalOpen(true);
+        triggerTelegramHaptic('warning');
+        throw new Error(matchData.message || 'Free quota limit reached. 1 USDT on TON Network required.');
+      }
       if (!matchRes.ok) throw new Error(matchData.error || 'Stage 3 Job matching failed');
 
       const activeMatchAnalysis = matchData.match_analysis;
@@ -669,6 +827,7 @@ export default function App() {
         3: { stage: 3, status: 'completed', completed_at: Date.now() },
       }));
       addLog(3, `Stage 3 Complete: Match score ${activeMatchAnalysis.match_score}% with ${activeMatchAnalysis.matching_keywords?.length || 0} matched keywords.`, 'success');
+      fetchUserQuota();
 
       // Stage 4: Tailored Resume Generation
       setCurrentStage(4);
@@ -698,6 +857,12 @@ export default function App() {
         }),
       });
       const resumeData = await resumeRes.json();
+      if (resumeRes.status === 402 || resumeData.error === 'QUOTA_EXCEEDED') {
+        if (resumeData.quota) setQuota(resumeData.quota);
+        setBillingModalOpen(true);
+        triggerTelegramHaptic('warning');
+        throw new Error(resumeData.message || 'Free quota limit reached. 1 USDT on TON Network required.');
+      }
       if (!resumeRes.ok) throw new Error(resumeData.error || 'Stage 4 Resume generation failed');
 
       setResume(resumeData.tailored_resume);
@@ -706,6 +871,7 @@ export default function App() {
         4: { stage: 4, status: 'completed', completed_at: Date.now() },
       }));
       addLog(4, '🎉 Full Autonomous Pipeline Completed! Tailored ATS resume ready for export.', 'success');
+      fetchUserQuota();
     } catch (err: any) {
       addLog(currentStage, `Autonomous pipeline halted: ${err.message}`, 'error');
     } finally {
@@ -744,6 +910,9 @@ export default function App() {
         userProfile={userProfile}
         experiencesCount={experiences.length}
         currentAiConfig={aiConfig}
+        dwappState={dwappState}
+        quota={quota}
+        onOpenBillingModal={() => setBillingModalOpen(true)}
         onOpenAiModal={() => setAiModalOpen(true)}
         onOpenDbModal={() => setDbModalOpen(true)}
         onOpenAuthModal={() => setAuthModalOpen(true)}
@@ -971,6 +1140,16 @@ export default function App() {
       <ArchitectureModal
         isOpen={architectureModalOpen}
         onClose={() => setArchitectureModalOpen(false)}
+      />
+
+      {/* TON Network Cryptocurrency Billing & Quota Management Modal */}
+      <TonBillingModal
+        isOpen={billingModalOpen}
+        onClose={() => setBillingModalOpen(false)}
+        quota={quota}
+        currentUserId={currentUser?.id || localStorage.getItem('resume_job_matcher_auth_token') || 'guest_user_default'}
+        dwappState={dwappState}
+        onQuotaUpdated={(newQuota) => setQuota(newQuota)}
       />
     </div>
   );

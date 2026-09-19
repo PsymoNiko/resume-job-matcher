@@ -17,7 +17,17 @@ import {
   Sliders,
   ChevronDown
 } from 'lucide-react';
-import { PipelineStage, StageStatus, UserAccount, UserProfileInfo, AIConfigSettings } from '../types';
+import { 
+  PipelineStage, 
+  StageStatus, 
+  UserAccount, 
+  UserProfileInfo, 
+  AIConfigSettings,
+  TelegramDWAppState,
+  UserQuotaState
+} from '../types';
+import { TelegramBadge } from './TelegramBadge';
+import { QuotaBadge } from './QuotaBadge';
 
 interface PipelineFlowHeaderProps {
   currentStage: PipelineStage;
@@ -30,11 +40,14 @@ interface PipelineFlowHeaderProps {
   userProfile?: UserProfileInfo | null;
   experiencesCount?: number;
   currentAiConfig?: AIConfigSettings;
+  dwappState?: TelegramDWAppState;
+  quota?: UserQuotaState | null;
   onOpenAiModal?: () => void;
   onOpenDbModal?: () => void;
   onOpenAuthModal?: () => void;
   onOpenProfileModal?: () => void;
   onOpenExperienceModal?: () => void;
+  onOpenBillingModal?: () => void;
   onSignOut?: () => void;
 }
 
@@ -49,11 +62,14 @@ export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
   userProfile,
   experiencesCount = 0,
   currentAiConfig,
+  dwappState,
+  quota,
   onOpenAiModal,
   onOpenDbModal,
   onOpenAuthModal,
   onOpenProfileModal,
   onOpenExperienceModal,
+  onOpenBillingModal,
   onSignOut,
 }) => {
   const [userMenuOpen, setUserMenuOpen] = useState(false);
@@ -126,6 +142,22 @@ export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
 
         {/* User Account & Experience DB & Action Controls */}
         <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-end">
+          {/* Telegram DWApp Connection Badge */}
+          {dwappState && (
+            <TelegramBadge
+              dwappState={dwappState}
+              onOpenInfo={onOpenBillingModal}
+            />
+          )}
+
+          {/* TON Cryptocurrency Billing & Quota Badge */}
+          {onOpenBillingModal && (
+            <QuotaBadge
+              quota={quota || null}
+              onOpenBilling={onOpenBillingModal}
+            />
+          )}
+
           {/* AI Model Configurator Shortcut */}
           {onOpenAiModal && (
             <button

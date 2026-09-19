@@ -67,8 +67,10 @@ export function getDatabaseEnvConfig() {
   };
 }
 
-// Default guest user seed
+// Default guest user seed & Admin seed
 const GUEST_USER_ID = 'guest_user_default';
+const ADMIN_USER_ID = 'admin_user_primary';
+export const ADMIN_EMAIL_DEFAULT = 'alimohammadnia127@gmail.com';
 
 let dbCache: DatabaseSchema = {
   users: {
@@ -79,6 +81,18 @@ let dbCache: DatabaseSchema = {
       auth_provider: 'github',
       github_username: 'alexchen-dev',
       avatar_url: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+      free_tries_used: 0,
+      created_at: Date.now(),
+    },
+    [ADMIN_USER_ID]: {
+      id: ADMIN_USER_ID,
+      email: ADMIN_EMAIL_DEFAULT,
+      name: 'Ali (Admin)',
+      auth_provider: 'email',
+      role: 'admin',
+      unlimited_until: Date.now() + 365 * 24 * 3600 * 1000,
+      free_tries_used: 0,
+      avatar_url: `https://api.dicebear.com/7.x/initials/svg?seed=Ali+Admin`,
       created_at: Date.now(),
     },
   },
@@ -101,6 +115,21 @@ let dbCache: DatabaseSchema = {
         'discord.gg/engineering',
         'x.com/alexchen_dev',
       ],
+      updated_at: Date.now(),
+    },
+    [ADMIN_USER_ID]: {
+      user_id: ADMIN_USER_ID,
+      name: 'Ali (System Administrator)',
+      email: ADMIN_EMAIL_DEFAULT,
+      phone: '',
+      location: 'Global (Admin HQ)',
+      avatar_url: `https://api.dicebear.com/7.x/initials/svg?seed=Ali+Admin`,
+      title: 'Administrator & System Architect',
+      bio: 'Administrator with unrestricted lifetime access to all autonomous pipeline stages, multi-model AI routing, and TON blockchain settlement controls.',
+      github_username: '',
+      linkedin_url: '',
+      portfolio_url: '',
+      community_links: ['t.me/telegram'],
       updated_at: Date.now(),
     },
   },
@@ -778,4 +807,98 @@ User's Update Request:
       };
     }
   },
+
+  // Telegram DWApp User Login / Auto-Registration
+  loginWithTelegram(params: {
+    telegram_id: number | string;
+    first_name: string;
+    last_name?: string;
+    username?: string;
+    photo_url?: string;
+  }): UserAccount {
+    const tgIdStr = String(params.telegram_id);
+    const email = params.username ? `${params.username.toLowerCase()}@telegram.user` : `tg_${tgIdStr}@telegram.user`;
+    
+    // Check if user already registered with this telegram ID
+    for (const u of Object.values(dbCache.users)) {
+      if (u.telegram_id && String(u.telegram_id) === tgIdStr) {
+        return u;
+      }
+    }
+
+    // Check if this telegram user is the designated admin
+    const adminTgId = (process.env.ADMIN_TELEGRAM_ID || '').trim();
+    const isAdmin = adminTgId && (tgIdStr === adminTgId || (params.username && params.username.toLowerCase() === adminTgId.toLowerCase()));
+
+    const id = `tg_usr_${tgIdStr}`;
+    const fullName = [params.first_name, params.last_name].filter(Boolean).join(' ') || (params.username ? `@${params.username}` : 'Telegram User');
+
+    const newUser: UserAccount & { password?: string } = {
+      id,
+      email,
+      name: fullName,
+      auth_provider: 'telegram',
+      avatar_url: params.photo_url || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(fullName)}`,
+      github_username: params.username || '',
+      telegram_id: params.telegram_id,
+      role: isAdmin ? 'admin' : 'user',
+      free_tries_used: 0,
+      unlimited_until: isAdmin ? Date.now() + 365 * 24 * 3600 * 1000 : 0,
+      created_at: Date.now(),
+    };
+
+    dbCache.users[id] = newUser;
+
+    dbCache.profiles[id] = {
+      user_id: id,
+      name: fullName,
+      email,
+      phone: '',
+      location: 'Telegram DWApp',
+      avatar_url: newUser.avatar_url,
+      title: 'Full-Stack Developer',
+      bio: `Profile authenticated via Telegram DWApp (@${params.username || params.first_name}).`,
+      github_username: params.username || '',
+      linkedin_url: '',
+      portfolio_url: '',
+      community_links: params.username ? [`t.me/${params.username}`] : [],
+      updated_at: Date.now(),
+    };
+
+    dbCache.experiences[id] = [];
+    saveDb();
+
+    const { password: _, ...clean } = newUser;
+    return clean;
+  },
 };
+
+// Top-level exported helpers for TON Billing & Quota engine
+export function getUserById(userId: string): (UserAccount & { password?: string }) | null {
+  return dbCache.users[userId] || null;
+}
+
+export function updateUserQuota(userId: string, quotaUpdate: { free_tries_used?: number; unlimited_until?: number; ton_wallet_address?: string }) {
+  const user = dbCache.users[userId];
+  if (!user) {
+    // If guest session not in cache, create transient record
+    dbCache.users[userId] = {
+      id: userId,
+      email: `${userId}@guest.local`,
+      name: 'Guest Developer',
+      auth_provider: 'github',
+      created_at: Date.now(),
+      ...quotaUpdate,
+    };
+  } else {
+    if (quotaUpdate.free_tries_used !== undefined) user.free_tries_used = quotaUpdate.free_tries_used;
+    if (quotaUpdate.unlimited_until !== undefined) user.unlimited_until = quotaUpdate.unlimited_until;
+    if (quotaUpdate.ton_wallet_address !== undefined) user.ton_wallet_address = quotaUpdate.ton_wallet_address;
+  }
+  saveDb();
+}
+
+export function getAdminEmail(): string {
+  return process.env.ADMIN_EMAIL || ADMIN_EMAIL_DEFAULT;
+}
+

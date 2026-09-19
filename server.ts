@@ -19,6 +19,16 @@ import {
   PRESET_MODELS,
 } from './server/aiService';
 import { db } from './server/db';
+import {
+  getTonBillingConfig,
+  getUserQuotaState,
+  consumeUserQuotaTry,
+  createTonPaymentOrder,
+  verifyAndActivateDailyPass,
+  adminGrantPass,
+  adminResetUserQuota,
+  isUserAdmin,
+} from './server/tonBilling';
 
 dotenv.config();
 
@@ -26,6 +36,17 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json({ limit: '15mb' }));
+
+// TonConnect Manifest Endpoint (Required for TON Network Wallets: Tonkeeper, @wallet, etc.)
+app.get('/tonconnect-manifest.json', (req, res) => {
+  res.json({
+    url: `${req.protocol}://${req.get('host')}`,
+    name: 'Self-Analyzer AI Agent & DWApp',
+    iconUrl: 'https://raw.githubusercontent.com/ton-community/assets/main/icons/ton_symbol.svg',
+    termsOfUseUrl: `${req.protocol}://${req.get('host')}`,
+    privacyPolicyUrl: `${req.protocol}://${req.get('host')}`,
+  });
+});
 
 // Lazy/Safe Gemini AI Client initialization
 function getGenAI() {
@@ -146,6 +167,108 @@ app.post('/api/auth/social-connect', (req, res) => {
     res.json({ user, profile });
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Social connection failed' });
+  }
+});
+
+// Telegram DWApp Auto-Authentication
+app.post('/api/auth/telegram', (req, res) => {
+  try {
+    const { telegram_id, first_name, last_name, username, photo_url } = req.body;
+    if (!telegram_id) {
+      return res.status(400).json({ error: 'telegram_id is required' });
+    }
+    const user = db.loginWithTelegram({
+      telegram_id,
+      first_name: first_name || 'Telegram User',
+      last_name,
+      username,
+      photo_url,
+    });
+    const profile = db.getUserProfile(user.id);
+    const quota = getUserQuotaState(user.id);
+    res.json({ user, profile, quota });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Telegram authentication failed' });
+  }
+});
+
+// TON Cryptocurrency Billing & Quota Endpoints
+app.get('/api/ton/config', (req, res) => {
+  try {
+    const config = getTonBillingConfig();
+    res.json({ config });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to get TON billing config' });
+  }
+});
+
+app.get('/api/ton/user-quota', (req, res) => {
+  try {
+    const userId = (req.headers['x-user-id'] as string) || (req.query.user_id as string) || 'guest_user_default';
+    const quota = getUserQuotaState(userId);
+    res.json({ quota });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to fetch user quota' });
+  }
+});
+
+app.post('/api/ton/create-order', (req, res) => {
+  try {
+    const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
+    const { selected_currency } = req.body;
+    const order = createTonPaymentOrder({
+      userId,
+      selectedCurrency: selected_currency === 'TON' ? 'TON' : 'USDT',
+    });
+    res.json({ order });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to create TON invoice order' });
+  }
+});
+
+app.post('/api/ton/verify-payment', (req, res) => {
+  try {
+    const { order_id, tx_hash, sender_address } = req.body;
+    if (!order_id) {
+      return res.status(400).json({ error: 'order_id is required' });
+    }
+    const result = verifyAndActivateDailyPass({
+      orderId: order_id,
+      txHash: tx_hash,
+      senderAddress: sender_address,
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Payment verification failed' });
+  }
+});
+
+// Admin overrides: manual pass granting and quota reset
+app.post('/api/ton/admin/grant-pass', (req, res) => {
+  try {
+    const adminUserId = (req.headers['x-user-id'] as string) || req.body.admin_user_id || '';
+    const { target_user_id, duration_hours = 24 } = req.body;
+    if (!target_user_id) {
+      return res.status(400).json({ error: 'target_user_id is required' });
+    }
+    const updatedQuota = adminGrantPass(adminUserId, target_user_id, Number(duration_hours));
+    res.json({ success: true, quota: updatedQuota });
+  } catch (err: any) {
+    res.status(403).json({ error: err.message || 'Admin action failed' });
+  }
+});
+
+app.post('/api/ton/admin/reset-quota', (req, res) => {
+  try {
+    const adminUserId = (req.headers['x-user-id'] as string) || req.body.admin_user_id || '';
+    const { target_user_id } = req.body;
+    if (!target_user_id) {
+      return res.status(400).json({ error: 'target_user_id is required' });
+    }
+    const updatedQuota = adminResetUserQuota(adminUserId, target_user_id);
+    res.json({ success: true, quota: updatedQuota });
+  } catch (err: any) {
+    res.status(403).json({ error: err.message || 'Admin action failed' });
   }
 });
 
@@ -380,6 +503,18 @@ app.post('/api/extract-github', async (req, res) => {
 app.post('/api/synthesize-profile', async (req, res) => {
   try {
     const { raw_github_data, extra_notes, ai_config } = req.body;
+    const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
+
+    // Enforce Quota (3 free tries, then 1 USDT on TON Network daily pass)
+    try {
+      consumeUserQuotaTry(userId);
+    } catch (quotaErr: any) {
+      return res.status(402).json({
+        error: 'QUOTA_EXCEEDED',
+        message: quotaErr.message || 'Free tries limit reached. 1 USDT on TON Network required for 24-hour daily pass.',
+        quota: getUserQuotaState(userId),
+      });
+    }
 
     if (!raw_github_data || !raw_github_data.repositories) {
       return res.status(400).json({ error: 'raw_github_data is required' });
@@ -648,6 +783,18 @@ app.post('/api/parse-job-document', async (req, res) => {
 app.post('/api/match-job', async (req, res) => {
   try {
     const { master_profile, job_description, ai_config } = req.body;
+    const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
+
+    // Enforce Quota (3 free tries, then 1 USDT on TON Network daily pass)
+    try {
+      consumeUserQuotaTry(userId);
+    } catch (quotaErr: any) {
+      return res.status(402).json({
+        error: 'QUOTA_EXCEEDED',
+        message: quotaErr.message || 'Free tries limit reached. 1 USDT on TON Network required for 24-hour daily pass.',
+        quota: getUserQuotaState(userId),
+      });
+    }
 
     if (!master_profile || !job_description) {
       return res.status(400).json({ error: 'master_profile and job_description are required' });
@@ -756,6 +903,18 @@ app.post('/api/generate-tailored-resume', async (req, res) => {
   try {
     const { master_profile, job_description, match_analysis, contact_info, ai_config } = req.body;
     const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
+
+    // Enforce Quota (3 free tries, then 1 USDT on TON Network daily pass)
+    try {
+      consumeUserQuotaTry(userId);
+    } catch (quotaErr: any) {
+      return res.status(402).json({
+        error: 'QUOTA_EXCEEDED',
+        message: quotaErr.message || 'Free tries limit reached. 1 USDT on TON Network required for 24-hour daily pass.',
+        quota: getUserQuotaState(userId),
+      });
+    }
+
     const storedExperiences = db.getUserExperiences(userId);
 
     if (!master_profile || !job_description || !match_analysis) {

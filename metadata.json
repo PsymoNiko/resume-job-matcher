@@ -1,6 +1,6 @@
 {
   "name": "Self-Analyzer AI Agent",
-  "description": "Autonomous 4-stage pipeline extracting GitHub repositories, synthesizing a master developer profile, matching target job descriptions, and generating ATS-compliant tailored resumes.",
+  "description": "Autonomous 4-stage pipeline with Telegram DWApp integration, TON Network crypto billing, developer profile synthesis, and tailored ATS resume generation.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
