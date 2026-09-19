@@ -1,7 +1,11 @@
 import fs from 'fs';
 import path from 'path';
-import { UserAccount, UserProfileInfo, UserExperienceItem, GitHubProfileData } from '../src/types';
-import { executeGeminiWithRetry, cleanJsonResponse } from './aiService';
+import crypto from 'crypto';
+import pg from 'pg';
+import { UserAccount, UserProfileInfo, UserExperienceItem, GitHubProfileData, AIConfigSettings } from '../src/types';
+import { executeUnifiedAI, cleanJsonResponse } from './aiService';
+
+const { Pool } = pg;
 
 interface DatabaseSchema {
   users: Record<string, UserAccount & { password?: string }>;
@@ -11,6 +15,57 @@ interface DatabaseSchema {
 
 const DATA_DIR = path.join(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'user_storage.json');
+
+// Salted SHA256 password hashing
+function hashPassword(password: string): string {
+  const salt = 'rjm_auth_salt_2026_';
+  return crypto.createHash('sha256').update(salt + password).digest('hex');
+}
+
+// PostgreSQL pool state
+let pgPool: pg.Pool | null = null;
+let pgConnected = false;
+let pgLastError: string | null = null;
+
+// Database connection configuration from environment variables
+export function getDatabaseEnvConfig() {
+  const databaseUrl = process.env.DATABASE_URL || '';
+  const dbType = process.env.DB_TYPE || (databaseUrl ? databaseUrl.split(':')[0] : 'local_json');
+  const dbHost = process.env.DB_HOST || '';
+  const dbPort = process.env.DB_PORT || '5432';
+  const dbUser = process.env.DB_USER || '';
+  const dbName = process.env.DB_NAME || 'resume_matcher_db';
+  const dbSsl = process.env.DB_SSL === 'true';
+
+  const isConfigured = Boolean(databaseUrl || dbHost);
+
+  let targetHost = 'local_file_cache';
+  let targetDb = 'user_storage.json';
+
+  if (databaseUrl) {
+    try {
+      // e.g. postgresql://user:pass@host:port/dbname
+      const parsed = new URL(databaseUrl.includes('://') ? databaseUrl : `postgres://${databaseUrl}`);
+      targetHost = parsed.hostname || 'external-host';
+      targetDb = parsed.pathname?.replace(/^\//, '') || dbName;
+    } catch {
+      targetHost = 'configured-url';
+    }
+  } else if (dbHost) {
+    targetHost = `${dbHost}:${dbPort}`;
+    targetDb = dbName;
+  }
+
+  return {
+    isConfigured,
+    dbType: dbType || 'postgres',
+    targetHost,
+    targetDb,
+    dbUser: dbUser ? `${dbUser.slice(0, 3)}***` : '',
+    dbSsl,
+    databaseUrl: databaseUrl ? `${databaseUrl.slice(0, 14)}***` : '',
+  };
+}
 
 // Default guest user seed
 const GUEST_USER_ID = 'guest_user_default';
@@ -105,6 +160,100 @@ let dbCache: DatabaseSchema = {
   },
 };
 
+// Asynchronous External DB Initializer
+async function initExternalDatabase() {
+  const databaseUrl = process.env.DATABASE_URL;
+  const dbHost = process.env.DB_HOST;
+
+  if (!databaseUrl && !dbHost) {
+    return;
+  }
+
+  try {
+    const config: pg.PoolConfig = databaseUrl
+      ? { connectionString: databaseUrl, ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false }
+      : {
+          host: process.env.DB_HOST,
+          port: Number(process.env.DB_PORT) || 5432,
+          user: process.env.DB_USER,
+          password: process.env.DB_PASSWORD,
+          database: process.env.DB_NAME || 'resume_matcher_db',
+          ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
+        };
+
+    pgPool = new Pool({
+      ...config,
+      connectionTimeoutMillis: 4000,
+      idleTimeoutMillis: 10000,
+    });
+
+    const client = await pgPool.connect();
+    pgConnected = true;
+    pgLastError = null;
+    console.log('[Database] Successfully connected to external PostgreSQL database.');
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS app_users (
+        id VARCHAR(255) PRIMARY KEY,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        password_hash VARCHAR(255),
+        auth_provider VARCHAR(50),
+        avatar_url TEXT,
+        github_username VARCHAR(255),
+        created_at BIGINT
+      );
+      CREATE TABLE IF NOT EXISTS app_profiles (
+        user_id VARCHAR(255) PRIMARY KEY,
+        data JSONB NOT NULL,
+        updated_at BIGINT
+      );
+      CREATE TABLE IF NOT EXISTS app_experiences (
+        id VARCHAR(255) PRIMARY KEY,
+        user_id VARCHAR(255) NOT NULL,
+        data JSONB NOT NULL,
+        updated_at BIGINT
+      );
+    `);
+
+    // Sync records from DB into cache if present
+    const usersRes = await client.query('SELECT * FROM app_users LIMIT 500');
+    for (const row of usersRes.rows) {
+      dbCache.users[row.id] = {
+        id: row.id,
+        email: row.email,
+        name: row.name,
+        password: row.password_hash,
+        auth_provider: row.auth_provider,
+        avatar_url: row.avatar_url,
+        github_username: row.github_username,
+        created_at: Number(row.created_at),
+      };
+    }
+
+    const profilesRes = await client.query('SELECT * FROM app_profiles LIMIT 500');
+    for (const row of profilesRes.rows) {
+      dbCache.profiles[row.user_id] = row.data;
+    }
+
+    const expRes = await client.query('SELECT * FROM app_experiences LIMIT 1000');
+    for (const row of expRes.rows) {
+      if (!dbCache.experiences[row.user_id]) {
+        dbCache.experiences[row.user_id] = [];
+      }
+      if (!dbCache.experiences[row.user_id].some((e) => e.id === row.id)) {
+        dbCache.experiences[row.user_id].push(row.data);
+      }
+    }
+
+    client.release();
+  } catch (err: any) {
+    pgConnected = false;
+    pgLastError = err.message || 'Connection failed';
+    console.log(`[Database Notice] External database connection notice: ${pgLastError}. Operating seamlessly on resilient local storage.`);
+  }
+}
+
 function initDb() {
   try {
     if (!fs.existsSync(DATA_DIR)) {
@@ -126,6 +275,9 @@ function initDb() {
   } catch (err) {
     console.log('[Database] Notice initializing disk store, continuing with active cache.');
   }
+
+  // Attempt external DB sync if environment variables are supplied
+  initExternalDatabase().catch(() => {});
 }
 
 function saveDb() {
@@ -136,6 +288,53 @@ function saveDb() {
     fs.writeFileSync(DB_FILE, JSON.stringify(dbCache, null, 2), 'utf-8');
   } catch (err) {
     console.log('[Database] Notice saving disk store.');
+  }
+
+  // Asynchronously sync with external PostgreSQL if connected
+  if (pgConnected && pgPool) {
+    (async () => {
+      try {
+        const client = await pgPool.connect();
+        // Sync users
+        for (const user of Object.values(dbCache.users)) {
+          await client.query(
+            `INSERT INTO app_users (id, email, name, password_hash, auth_provider, avatar_url, github_username, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (id) DO UPDATE SET
+               email = EXCLUDED.email,
+               name = EXCLUDED.name,
+               password_hash = COALESCE(EXCLUDED.password_hash, app_users.password_hash),
+               auth_provider = EXCLUDED.auth_provider,
+               avatar_url = EXCLUDED.avatar_url,
+               github_username = EXCLUDED.github_username;`,
+            [user.id, user.email, user.name, user.password || null, user.auth_provider, user.avatar_url || null, user.github_username || null, user.created_at]
+          );
+        }
+        // Sync profiles
+        for (const [userId, profile] of Object.entries(dbCache.profiles)) {
+          await client.query(
+            `INSERT INTO app_profiles (user_id, data, updated_at)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at;`,
+            [userId, JSON.stringify(profile), profile.updated_at || Date.now()]
+          );
+        }
+        // Sync experiences
+        for (const [userId, exps] of Object.entries(dbCache.experiences)) {
+          for (const exp of exps) {
+            await client.query(
+              `INSERT INTO app_experiences (id, user_id, data, updated_at)
+               VALUES ($1, $2, $3, $4)
+               ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at;`,
+              [exp.id, userId, JSON.stringify(exp), exp.updated_at || Date.now()]
+            );
+          }
+        }
+        client.release();
+      } catch (syncErr: any) {
+        console.log(`[Database Sync Notice] External sync: ${syncErr.message}`);
+      }
+    })();
   }
 }
 
@@ -169,13 +368,15 @@ export const db = {
     avatar_url?: string;
     github_username?: string;
   }): UserAccount {
-    const existing = this.findUserByEmail(params.email);
+    const normalizedEmail = params.email.trim().toLowerCase();
+    const existing = this.findUserByEmail(normalizedEmail);
     if (existing) {
       // If user exists with social provider, update info and return
       if (params.auth_provider !== 'email' || !existing.password) {
         existing.name = params.name || existing.name;
         existing.avatar_url = params.avatar_url || existing.avatar_url;
         if (params.github_username) existing.github_username = params.github_username;
+        if (params.password) existing.password = hashPassword(params.password);
         saveDb();
         const { password: _, ...clean } = existing;
         return clean;
@@ -184,13 +385,14 @@ export const db = {
     }
 
     const id = `usr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const hashedPassword = params.password ? hashPassword(params.password) : undefined;
     const newUser: UserAccount & { password?: string } = {
       id,
-      email: params.email.trim().toLowerCase(),
-      name: params.name || (params.email.split('@')[0]),
-      password: params.password,
+      email: normalizedEmail,
+      name: params.name || normalizedEmail.split('@')[0],
+      password: hashedPassword,
       auth_provider: params.auth_provider,
-      avatar_url: params.avatar_url || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(params.name || params.email)}`,
+      avatar_url: params.avatar_url || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(params.name || normalizedEmail)}`,
       github_username: params.github_username,
       created_at: Date.now(),
     };
@@ -227,14 +429,28 @@ export const db = {
     password?: string;
     auth_provider: 'email' | 'github' | 'google';
   }): UserAccount {
-    const user = this.findUserByEmail(params.email);
+    const normalizedEmail = params.email.trim().toLowerCase();
+    let user = this.findUserByEmail(normalizedEmail);
     if (!user) {
+      // If user logs in with social or if user email is provided, auto-register
+      if (params.auth_provider !== 'email') {
+        return this.registerUser({
+          email: normalizedEmail,
+          name: normalizedEmail.split('@')[0],
+          auth_provider: params.auth_provider,
+        });
+      }
       throw new Error('No account found for this email. Please register first.');
     }
 
     if (params.auth_provider === 'email') {
-      if (user.password && params.password && user.password !== params.password) {
-        throw new Error('Incorrect password. Please verify and try again.');
+      if (user.password && params.password) {
+        const hashed = hashPassword(params.password);
+        if (user.password !== hashed && user.password !== params.password) {
+          throw new Error('Incorrect password. Please verify your credentials and try again.');
+        }
+      } else if (user.password && !params.password) {
+        throw new Error('Password is required for this email account.');
       }
     }
 
@@ -413,7 +629,8 @@ export const db = {
   async updateExperienceWithAI(
     userId: string,
     expId: string,
-    userPrompt: string
+    userPrompt: string,
+    aiConfig?: AIConfigSettings
   ): Promise<UserExperienceItem> {
     const list = this.getUserExperiences(userId);
     const exp = list.find((e) => e.id === expId);
@@ -455,7 +672,12 @@ User's Update Request:
 "${userPrompt}"`;
 
     try {
-      const { text } = await executeGeminiWithRetry(systemPrompt, prompt);
+      const { text } = await executeUnifiedAI(systemPrompt, prompt, {
+        provider: aiConfig?.provider,
+        model: aiConfig?.model,
+        customBaseUrl: aiConfig?.customBaseUrl,
+        customApiKey: aiConfig?.customApiKey,
+      });
       const parsed = cleanJsonResponse(text);
 
       const updated = this.updateExperience(userId, expId, {
@@ -479,6 +701,81 @@ User's Update Request:
         source: 'ai_enhanced',
       });
       return updated;
+    }
+  },
+
+  // Connection & Environment Status
+  getConnectionStatus() {
+    const config = getDatabaseEnvConfig();
+    return {
+      configured: config.isConfigured,
+      connected: pgConnected,
+      mode: pgConnected ? 'external_connected' : config.isConfigured ? 'external_configured' : 'local_fallback',
+      type: config.dbType,
+      host: config.targetHost,
+      database: config.targetDb,
+      tables: ['app_users', 'app_profiles', 'app_experiences'],
+      last_error: pgLastError,
+      message: pgConnected
+        ? `Connected to external ${config.dbType.toUpperCase()} database (${config.targetHost}/${config.targetDb}) with active synchronization.`
+        : config.isConfigured
+        ? `Configured to target ${config.targetHost}/${config.targetDb}. Currently operating on resilient local storage (external DB notice: ${pgLastError || 'connecting...'}).`
+        : 'Active in local resilient file-backed store (data/user_storage.json). When DATABASE_URL or DB_* environment variables are set, connection bridges automatically to your external database.',
+      env_vars_detected: {
+        has_database_url: Boolean(process.env.DATABASE_URL),
+        has_db_host: Boolean(process.env.DB_HOST),
+        has_db_user: Boolean(process.env.DB_USER),
+        has_db_name: Boolean(process.env.DB_NAME),
+        has_db_port: Boolean(process.env.DB_PORT),
+        has_db_ssl: Boolean(process.env.DB_SSL),
+      },
+    };
+  },
+
+  // Real-time Database Connectivity Probe
+  async testDbConnection(): Promise<{ success: boolean; latency_ms?: number; message: string; version?: string }> {
+    const start = Date.now();
+    const config = getDatabaseEnvConfig();
+
+    if (!config.isConfigured) {
+      return {
+        success: true,
+        latency_ms: 1,
+        message: 'Local resilient JSON store (data/user_storage.json) is active, healthy, and operational. Set DATABASE_URL to connect to external PostgreSQL/MySQL database.',
+      };
+    }
+
+    try {
+      if (!pgPool) {
+        await initExternalDatabase();
+      }
+
+      if (!pgPool) {
+        throw new Error('Database pool could not be created.');
+      }
+
+      const client = await pgPool.connect();
+      const res = await client.query('SELECT version();');
+      client.release();
+      const latency = Date.now() - start;
+      pgConnected = true;
+      pgLastError = null;
+
+      return {
+        success: true,
+        latency_ms: latency,
+        message: `Successfully connected to PostgreSQL at ${config.targetHost} (${latency}ms).`,
+        version: res.rows[0]?.version?.split(' ')?.[0] || 'PostgreSQL',
+      };
+    } catch (err: any) {
+      const latency = Date.now() - start;
+      pgConnected = false;
+      pgLastError = err.message || 'Connection failed';
+      return {
+        success: false,
+        latency_ms: latency,
+        message: `External database probe notice: ${err.message || 'Connection failed'}. Local resilient storage remains fully operational.`,
+      };
     }
   },
 };

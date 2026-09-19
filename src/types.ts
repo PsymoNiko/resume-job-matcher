@@ -218,3 +218,49 @@ export interface UserExperienceItem {
   updated_at?: number;
 }
 
+export type AIProvider = 
+  | 'gemini' 
+  | 'openai' 
+  | 'anthropic' 
+  | 'deepseek' 
+  | 'self_hosted' 
+  | 'custom_openai'
+  | 'custom';
+
+export interface AIModelOption {
+  id: string;
+  name: string;
+  provider: AIProvider;
+  description: string;
+  badge?: string;
+  isDefault?: boolean;
+}
+
+export interface AIConfigSettings {
+  provider: AIProvider;
+  model: string;
+  customBaseUrl?: string;
+  customApiKey?: string;
+  temperature?: number;
+}
+
+export interface DatabaseConfigStatus {
+  configured: boolean;
+  connected?: boolean;
+  mode: 'external_connected' | 'external_configured' | 'external' | 'local_fallback';
+  type: string;
+  host: string;
+  database: string;
+  tables: string[];
+  last_error?: string | null;
+  message: string;
+  env_vars_detected: {
+    has_database_url: boolean;
+    has_db_host: boolean;
+    has_db_user: boolean;
+    has_db_name: boolean;
+    has_db_port?: boolean;
+    has_db_ssl?: boolean;
+  };
+}
+

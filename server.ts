@@ -4,6 +4,7 @@ import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 import {
+  executeUnifiedAI,
   executeGeminiWithRetry,
   cleanJsonResponse,
   buildHeuristicMasterProfile,
@@ -13,6 +14,9 @@ import {
   extractTextFromPdfBuffer,
   analyzeJobSourceText,
   buildHeuristicJobExtraction,
+  testAIConnection,
+  getAvailableAIProviders,
+  PRESET_MODELS,
 } from './server/aiService';
 import { db } from './server/db';
 
@@ -43,6 +47,46 @@ function getGenAI() {
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+// Database Environment & Connection Status Endpoint
+app.get('/api/db/status', (req, res) => {
+  try {
+    const status = db.getConnectionStatus();
+    res.json(status);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to check database status' });
+  }
+});
+
+app.post('/api/db/test-connection', async (req, res) => {
+  try {
+    const result = await db.testDbConnection();
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message || 'Database test failed' });
+  }
+});
+
+// AI Providers & Models Configuration Endpoint
+app.get('/api/ai/providers', (req, res) => {
+  try {
+    const info = getAvailableAIProviders();
+    res.json(info);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to get AI providers' });
+  }
+});
+
+// AI Connection & Latency Test Endpoint
+app.post('/api/ai/test-connection', async (req, res) => {
+  try {
+    const result = await testAIConnection(req.body);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message || 'Connection test failed' });
+  }
+});
+
 
 // Authentication Routes (Email, GitHub, Google/Gmail)
 app.post('/api/auth/register', (req, res) => {
@@ -178,11 +222,11 @@ app.post('/api/user/experiences/sync-github', (req, res) => {
 app.post('/api/user/experiences/ai-update', async (req, res) => {
   try {
     const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
-    const { experience_id, user_prompt } = req.body;
+    const { experience_id, user_prompt, ai_config } = req.body;
     if (!experience_id || !user_prompt) {
       return res.status(400).json({ error: 'experience_id and user_prompt are required' });
     }
-    const updated = await db.updateExperienceWithAI(userId, experience_id, user_prompt);
+    const updated = await db.updateExperienceWithAI(userId, experience_id, user_prompt, ai_config);
     res.json({ experience: updated });
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Failed to update experience with AI' });
@@ -335,13 +379,11 @@ app.post('/api/extract-github', async (req, res) => {
 // Stage 2: Master Profile Synthesizer
 app.post('/api/synthesize-profile', async (req, res) => {
   try {
-    const { raw_github_data, extra_notes } = req.body;
+    const { raw_github_data, extra_notes, ai_config } = req.body;
 
     if (!raw_github_data || !raw_github_data.repositories) {
       return res.status(400).json({ error: 'raw_github_data is required' });
     }
-
-    const ai = getGenAI();
 
     const systemPrompt = `You are an executive technical recruiter and principal engineering talent assessor.
 Your task is to analyze raw GitHub metadata, project READMEs, commit patterns, and code languages to synthesize a structured "Master Career Experience Database" for an engineer.
@@ -423,15 +465,23 @@ ${JSON.stringify(
 )}`;
 
     let parsedProfile;
-    let engineUsed = 'gemini-3.8-flash';
+    let engineUsed = 'gemini:gemini-3.8-flash';
     let fallbackMode = false;
+    let noticeMsg: string | undefined;
 
     try {
-      const { text, modelUsed, fallbackTriggered } = await executeGeminiWithRetry(systemPrompt, userPrompt);
-      parsedProfile = cleanJsonResponse(text);
-      engineUsed = modelUsed;
-      fallbackMode = fallbackTriggered;
-    } catch (_geminiErr: any) {
+      const result = await executeUnifiedAI(systemPrompt, userPrompt, {
+        provider: ai_config?.provider,
+        model: ai_config?.model,
+        customBaseUrl: ai_config?.customBaseUrl,
+        customApiKey: ai_config?.customApiKey,
+        temperature: ai_config?.temperature ?? 0.2,
+      });
+      parsedProfile = cleanJsonResponse(result.text);
+      engineUsed = `${result.provider}:${result.modelUsed}`;
+      fallbackMode = result.fallbackTriggered;
+      noticeMsg = result.notice;
+    } catch (_aiErr: any) {
       console.log('[Profile Synthesis] Engaging heuristic resilience engine (upstream status handled gracefully).');
       parsedProfile = buildHeuristicMasterProfile(raw_github_data, extra_notes);
       engineUsed = 'heuristic_resilience_engine';
@@ -443,6 +493,7 @@ ${JSON.stringify(
       meta: {
         engine: engineUsed,
         fallback_mode: fallbackMode,
+        notice: noticeMsg,
       },
     });
   } catch (err: any) {
@@ -455,7 +506,7 @@ ${JSON.stringify(
 // Stage 3 Helper: Fetch and analyze job opportunity from Web URL (Single Job or Careers Directory)
 app.post('/api/fetch-job-from-url', async (req, res) => {
   try {
-    const { url, candidate_profile } = req.body;
+    const { url, candidate_profile, ai_config } = req.body;
 
     if (!url || typeof url !== 'string') {
       return res.status(400).json({ error: 'A valid URL is required' });
@@ -523,13 +574,14 @@ app.post('/api/fetch-job-from-url', async (req, res) => {
     const analysis = await analyzeJobSourceText(
       cleanText,
       { sourceType: 'url', url: trimmedUrl },
-      candidate_profile
+      candidate_profile,
+      ai_config
     );
 
     res.json({
       ...analysis,
       meta: {
-        engine: 'gemini-3.8-flash',
+        engine: ai_config?.model || 'gemini-3.8-flash',
         source_url: trimmedUrl,
         extracted_chars: cleanText.length,
       },
@@ -544,7 +596,7 @@ app.post('/api/fetch-job-from-url', async (req, res) => {
 // Stage 3 Helper: Parse and extract job opportunity from uploaded Document (PDF or TXT)
 app.post('/api/parse-job-document', async (req, res) => {
   try {
-    const { file_name, file_type, file_base64, file_text, candidate_profile } = req.body;
+    const { file_name, file_type, file_base64, file_text, candidate_profile, ai_config } = req.body;
 
     if (!file_text && !file_base64) {
       return res.status(400).json({ error: 'Either file_text or file_base64 is required' });
@@ -573,13 +625,14 @@ app.post('/api/parse-job-document', async (req, res) => {
     const analysis = await analyzeJobSourceText(
       extractedText,
       { sourceType: 'document', fileName: file_name || 'job_description_document' },
-      candidate_profile
+      candidate_profile,
+      ai_config
     );
 
     res.json({
       ...analysis,
       meta: {
-        engine: 'gemini-3.8-flash',
+        engine: ai_config?.model || 'gemini-3.8-flash',
         file_name: file_name || 'document',
         extracted_chars: extractedText.length,
       },
@@ -594,13 +647,11 @@ app.post('/api/parse-job-document', async (req, res) => {
 // Stage 3: Job Matcher
 app.post('/api/match-job', async (req, res) => {
   try {
-    const { master_profile, job_description } = req.body;
+    const { master_profile, job_description, ai_config } = req.body;
 
     if (!master_profile || !job_description) {
       return res.status(400).json({ error: 'master_profile and job_description are required' });
     }
-
-    const ai = getGenAI();
 
     const systemPrompt = `You are a Principal Tech Recruiter and ATS Algorithm Specialist.
 Compare the Candidate Master Profile against the target Job Description (JD).
@@ -662,15 +713,23 @@ Target Job Description:
 ${job_description}`;
 
     let parsedMatch;
-    let engineUsed = 'gemini-3.8-flash';
+    let engineUsed = 'gemini:gemini-3.8-flash';
     let fallbackMode = false;
+    let noticeMsg: string | undefined;
 
     try {
-      const { text, modelUsed, fallbackTriggered } = await executeGeminiWithRetry(systemPrompt, userPrompt);
-      parsedMatch = cleanJsonResponse(text);
-      engineUsed = modelUsed;
-      fallbackMode = fallbackTriggered;
-    } catch (_geminiErr: any) {
+      const result = await executeUnifiedAI(systemPrompt, userPrompt, {
+        provider: ai_config?.provider,
+        model: ai_config?.model,
+        customBaseUrl: ai_config?.customBaseUrl,
+        customApiKey: ai_config?.customApiKey,
+        temperature: ai_config?.temperature ?? 0.2,
+      });
+      parsedMatch = cleanJsonResponse(result.text);
+      engineUsed = `${result.provider}:${result.modelUsed}`;
+      fallbackMode = result.fallbackTriggered;
+      noticeMsg = result.notice;
+    } catch (_aiErr: any) {
       console.log('[Job Matcher] Engaging heuristic resilience match engine (upstream status handled gracefully).');
       parsedMatch = buildHeuristicJobMatch(master_profile, job_description);
       engineUsed = 'heuristic_resilience_engine';
@@ -682,6 +741,7 @@ ${job_description}`;
       meta: {
         engine: engineUsed,
         fallback_mode: fallbackMode,
+        notice: noticeMsg,
       },
     });
   } catch (err: any) {
@@ -694,15 +754,13 @@ ${job_description}`;
 // Stage 4: Tailored Resume Generator & ATS Output
 app.post('/api/generate-tailored-resume', async (req, res) => {
   try {
-    const { master_profile, job_description, match_analysis, contact_info } = req.body;
+    const { master_profile, job_description, match_analysis, contact_info, ai_config } = req.body;
     const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
     const storedExperiences = db.getUserExperiences(userId);
 
     if (!master_profile || !job_description || !match_analysis) {
       return res.status(400).json({ error: 'master_profile, job_description, and match_analysis are required' });
     }
-
-    const ai = getGenAI();
 
     const systemPrompt = `You are an elite executive resume writer specializing in ATS-compliant, high-conversion technical engineering resumes.
 
@@ -817,15 +875,23 @@ Match Analysis & Selected Projects:
 ${JSON.stringify(match_analysis, null, 2)}`;
 
     let parsedResume;
-    let engineUsed = 'gemini-3.8-flash';
+    let engineUsed = 'gemini:gemini-3.8-flash';
     let fallbackMode = false;
+    let noticeMsg: string | undefined;
 
     try {
-      const { text, modelUsed, fallbackTriggered } = await executeGeminiWithRetry(systemPrompt, userPrompt);
-      parsedResume = cleanJsonResponse(text);
-      engineUsed = modelUsed;
-      fallbackMode = fallbackTriggered;
-    } catch (_geminiErr: any) {
+      const result = await executeUnifiedAI(systemPrompt, userPrompt, {
+        provider: ai_config?.provider,
+        model: ai_config?.model,
+        customBaseUrl: ai_config?.customBaseUrl,
+        customApiKey: ai_config?.customApiKey,
+        temperature: ai_config?.temperature ?? 0.2,
+      });
+      parsedResume = cleanJsonResponse(result.text);
+      engineUsed = `${result.provider}:${result.modelUsed}`;
+      fallbackMode = result.fallbackTriggered;
+      noticeMsg = result.notice;
+    } catch (_aiErr: any) {
       console.log('[Resume Generator] Engaging heuristic resilience resume engine (upstream status handled gracefully).');
       parsedResume = buildHeuristicATSResume(master_profile, job_description, match_analysis, contact_info);
       engineUsed = 'heuristic_resilience_engine';
@@ -848,6 +914,7 @@ ${JSON.stringify(match_analysis, null, 2)}`;
       meta: {
         engine: engineUsed,
         fallback_mode: fallbackMode,
+        notice: noticeMsg,
       },
     });
   } catch (err: any) {

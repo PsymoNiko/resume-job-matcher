@@ -57,6 +57,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       return;
     }
 
+    if (authMode === 'register' && password.length < 6) {
+      setErrorMessage('Password must be at least 6 characters.');
+      return;
+    }
+
     setIsLoading(true);
     try {
       const endpoint = authMode === 'register' ? '/api/auth/register' : '/api/auth/login';
@@ -68,6 +73,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           name: name.trim(),
           password,
           auth_provider: 'email',
+          github_username: githubUsername.trim() || undefined,
         }),
       });
 
@@ -75,6 +81,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       if (!res.ok) {
         throw new Error(data.error || 'Authentication failed. Please check credentials.');
       }
+
+      // Persist auth token
+      localStorage.setItem('resume_job_matcher_auth_user', JSON.stringify(data.user));
+      localStorage.setItem('resume_job_matcher_auth_token', data.user.id);
 
       setSuccessMessage(authMode === 'register' ? 'Account successfully registered!' : 'Logged in successfully!');
       setTimeout(() => {
@@ -100,13 +110,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       let targetAvatar = '';
 
       if (prov === 'github') {
-        const ghUser = githubUsername.trim() || 'alexchen-dev';
+        const ghUser = githubUsername.trim() || (email.includes('@') ? email.split('@')[0] : 'candidate-dev');
         targetGithub = ghUser;
         targetName = targetName || ghUser;
         targetEmail = targetEmail || `${ghUser}@users.noreply.github.com`;
         targetAvatar = `https://github.com/${ghUser}.png`;
       } else if (prov === 'google') {
-        targetEmail = email.includes('@') ? email : 'naimehrouhi@gmail.com';
+        targetEmail = email.includes('@') ? email.trim() : 'alimohammadnia127@gmail.com';
         targetName = targetName || targetEmail.split('@')[0];
         targetAvatar = `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(targetName)}`;
       }
@@ -127,6 +137,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       if (!res.ok) {
         throw new Error(data.error || `Failed to sign in with ${prov}`);
       }
+
+      // Persist auth token
+      localStorage.setItem('resume_job_matcher_auth_user', JSON.stringify(data.user));
+      localStorage.setItem('resume_job_matcher_auth_token', data.user.id);
 
       setSuccessMessage(`Signed in with ${prov === 'github' ? 'GitHub' : 'Gmail / Google'}!`);
       setTimeout(() => {

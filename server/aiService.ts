@@ -3,13 +3,16 @@ import {
   GitHubProfileData, 
   MasterProfile, 
   JobMatchAnalysis, 
-  ATSResume 
+  ATSResume,
+  AIProvider,
+  AIConfigSettings,
+  AIModelOption
 } from '../src/types';
 
-// Supported, valid models according to @google/genai specifications
-const PRIMARY_MODEL = 'gemini-3.8-flash';
-const SECONDARY_MODEL = 'gemini-3.1-flash-lite';
-const TERTIARY_MODEL = 'gemini-flash-latest';
+// Supported default models
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
+export const SECONDARY_GEMINI_MODEL = 'gemini-3.1-flash-lite';
+export const TERTIARY_GEMINI_MODEL = 'gemini-flash-latest';
 
 export interface GenerationResult {
   text: string;
@@ -17,17 +20,155 @@ export interface GenerationResult {
   fallbackTriggered: boolean;
 }
 
-function getGenAI() {
-  const apiKey = process.env.GEMINI_API_KEY;
+export interface UnifiedGenerationResult {
+  text: string;
+  provider: AIProvider;
+  modelUsed: string;
+  fallbackTriggered: boolean;
+  notice?: string;
+}
+
+export interface AIExecutionOptions {
+  provider?: AIProvider;
+  model?: string;
+  customBaseUrl?: string;
+  customApiKey?: string;
+  temperature?: number;
+  timeoutMs?: number;
+}
+
+// Catalog of preset model choices across providers
+export const PRESET_MODELS: AIModelOption[] = [
+  // Google Gemini
+  {
+    id: 'gemini-3.8-flash',
+    name: 'Gemini 3.8 Flash',
+    provider: 'gemini',
+    description: 'Ultra-fast, state-of-the-art multimodal model optimized for reasoning & structured JSON.',
+    badge: 'Recommended',
+    isDefault: true,
+  },
+  {
+    id: 'gemini-3.1-pro-preview',
+    name: 'Gemini 3.1 Pro Preview',
+    provider: 'gemini',
+    description: 'High-capability frontier model for deep architectural analysis and complex synthesis.',
+    badge: 'Frontier',
+  },
+  {
+    id: 'gemini-3.1-flash-lite',
+    name: 'Gemini 3.1 Flash Lite',
+    provider: 'gemini',
+    description: 'Low-latency, lightweight Gemini model with resilient high throughput.',
+  },
+  {
+    id: 'gemini-flash-latest',
+    name: 'Gemini Flash Latest',
+    provider: 'gemini',
+    description: 'Continuously updated production Flash tier.',
+  },
+
+  // OpenAI
+  {
+    id: 'gpt-4o',
+    name: 'GPT-4o',
+    provider: 'openai',
+    description: 'Omni-directional flagship model with excellent analytical skills and structured reasoning.',
+    badge: 'Cloud',
+  },
+  {
+    id: 'gpt-4o-mini',
+    name: 'GPT-4o Mini',
+    provider: 'openai',
+    description: 'Fast, cost-efficient model for parsing and rapid alignment checks.',
+  },
+  {
+    id: 'o3-mini',
+    name: 'o3 Mini Reasoning',
+    provider: 'openai',
+    description: 'Specialized STEM and technical reasoning model with step-by-step logic.',
+  },
+
+  // Anthropic Claude
+  {
+    id: 'claude-3-7-sonnet-20250219',
+    name: 'Claude 3.7 Sonnet',
+    provider: 'anthropic',
+    description: 'State-of-the-art hybrid reasoning & writing model from Anthropic.',
+    badge: 'Cloud',
+  },
+  {
+    id: 'claude-3-5-haiku-20241022',
+    name: 'Claude 3.5 Haiku',
+    provider: 'anthropic',
+    description: 'Sub-second lightweight Claude model with crisp syntax generation.',
+  },
+
+  // DeepSeek
+  {
+    id: 'deepseek-chat',
+    name: 'DeepSeek-V3 Chat',
+    provider: 'deepseek',
+    description: 'High-performance MoE foundation model specialized in coding and software architecture.',
+    badge: 'Cloud',
+  },
+  {
+    id: 'deepseek-reasoner',
+    name: 'DeepSeek-R1 Reasoner',
+    provider: 'deepseek',
+    description: 'Reinforcement learning reasoning model with chain-of-thought verification.',
+  },
+
+  // Self-Hosted Open-Source LLMs (Gemma, DeepSeek, Llama on Ollama / vLLM / LocalAI)
+  {
+    id: 'gemma2:9b',
+    name: 'Gemma 2 (9B)',
+    provider: 'self_hosted',
+    description: "Google's open-weights high-efficiency model running locally via Ollama / vLLM.",
+    badge: 'Self-Hosted / Local',
+  },
+  {
+    id: 'gemma2:27b',
+    name: 'Gemma 2 (27B)',
+    provider: 'self_hosted',
+    description: "Google's 27B parameter powerhouse for local privacy-first execution.",
+    badge: 'Self-Hosted / Local',
+  },
+  {
+    id: 'deepseek-r1:8b',
+    name: 'DeepSeek-R1 (Local)',
+    provider: 'self_hosted',
+    description: 'Local distilled reasoning model running on private infrastructure.',
+    badge: 'Self-Hosted / Local',
+  },
+  {
+    id: 'llama3.3:70b',
+    name: 'Llama 3.3 (70B)',
+    provider: 'self_hosted',
+    description: 'Meta open weights LLM running via local Ollama or private cloud endpoint.',
+    badge: 'Self-Hosted / Local',
+  },
+
+  // Custom Cloud / OpenAI-Compatible Endpoint
+  {
+    id: 'custom-model',
+    name: 'Custom OpenAI-Compatible Endpoint',
+    provider: 'custom_openai',
+    description: 'Connect any OpenAI-compatible API (Groq, Together, OpenRouter, Mistral, LocalAI).',
+    badge: 'Custom URL',
+  },
+];
+
+function getGenAI(customKey?: string) {
+  const apiKey = customKey || process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is not set. Please set it in Settings > Secrets.');
+    throw new Error('GEMINI_API_KEY is not configured in environment variables.');
   }
   return new GoogleGenAI({ apiKey });
 }
 
 function cleanJsonResponse(rawText: string): any {
   let cleaned = rawText.trim();
-  // Remove markdown code blocks if wrapped
   if (cleaned.startsWith('```json')) {
     cleaned = cleaned.replace(/^```json\s*/i, '').replace(/\s*```$/, '');
   } else if (cleaned.startsWith('```')) {
@@ -38,7 +179,6 @@ function cleanJsonResponse(rawText: string): any {
   try {
     return JSON.parse(cleaned);
   } catch {
-    // Attempt to extract outermost JSON object { ... }
     const firstBrace = cleaned.indexOf('{');
     const lastBrace = cleaned.lastIndexOf('}');
     if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
@@ -50,17 +190,18 @@ function cleanJsonResponse(rawText: string): any {
 }
 
 /**
- * Executes a Gemini prompt with automatic retries for transient errors (503, 429, 500),
- * fast failover between models, and a safety timeout.
+ * Call Google Gemini with fast fallback across models.
  */
 export async function executeGeminiWithRetry(
   systemPrompt: string,
   userPrompt: string,
   temperature = 0.2,
-  timeoutMs = 25000
+  timeoutMs = 25000,
+  targetModel = DEFAULT_GEMINI_MODEL,
+  customKey?: string
 ): Promise<GenerationResult> {
-  const ai = getGenAI();
-  const modelChain = [PRIMARY_MODEL, SECONDARY_MODEL, TERTIARY_MODEL];
+  const ai = getGenAI(customKey);
+  const modelChain = Array.from(new Set([targetModel, DEFAULT_GEMINI_MODEL, SECONDARY_GEMINI_MODEL, TERTIARY_GEMINI_MODEL]));
 
   let lastError: any = null;
 
@@ -88,7 +229,6 @@ export async function executeGeminiWithRetry(
         );
 
         const response = await Promise.race([callPromise, timeoutPromise]);
-
         const text = response.text || '';
         if (!text.trim()) {
           throw new Error('Empty response received from Gemini model.');
@@ -103,27 +243,12 @@ export async function executeGeminiWithRetry(
       } catch (err: any) {
         lastError = err;
         const rawMsg = err?.message || String(err);
-
-        let statusSummary = 'temporary connection latency';
-        if (rawMsg.includes('503') || rawMsg.includes('UNAVAILABLE') || rawMsg.includes('high demand')) {
-          statusSummary = 'temporary server capacity (503)';
-        } else if (rawMsg.includes('429') || rawMsg.includes('RESOURCE_EXHAUSTED') || rawMsg.includes('quota')) {
-          statusSummary = 'quota limit reached (429)';
-        } else if (rawMsg.includes('Timeout') || rawMsg.includes('timeout')) {
-          statusSummary = 'response timeout reached';
-        } else if (rawMsg.includes('404') || rawMsg.includes('NOT_FOUND')) {
-          statusSummary = 'model routing alias not found';
-        }
-
-        console.log(`[Gemini Pipeline] Model '${model}' notice (attempt ${attempt}): ${statusSummary}. Shifting to next pipeline stage...`);
+        console.log(`[Gemini Pipeline] Model '${model}' notice (attempt ${attempt}): ${rawMsg.slice(0, 120)}`);
 
         const is503 = rawMsg.includes('503') || rawMsg.includes('UNAVAILABLE') || rawMsg.includes('high demand');
         const isQuota = rawMsg.includes('429') || rawMsg.includes('RESOURCE_EXHAUSTED');
 
-        // Fast failover to next model in chain immediately on high demand or quota
-        if (is503 || isQuota) {
-          break;
-        }
+        if (is503 || isQuota) break;
 
         if (attempt < maxAttempts) {
           await new Promise((resolve) => setTimeout(resolve, 800));
@@ -136,6 +261,452 @@ export async function executeGeminiWithRetry(
 
   throw lastError;
 }
+
+/**
+ * Call OpenAI API via direct HTTPS.
+ */
+async function callOpenAI(
+  systemPrompt: string,
+  userPrompt: string,
+  options: { model?: string; apiKey?: string; temperature?: number; timeoutMs?: number }
+): Promise<string> {
+  const apiKey = options.apiKey || process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error('OPENAI_API_KEY is not configured.');
+  }
+
+  const model = options.model || 'gpt-4o';
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 30000);
+
+  try {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: options.temperature ?? 0.2,
+        response_format: { type: 'json_object' },
+      }),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const errBody = await res.text();
+      throw new Error(`OpenAI API error (${res.status}): ${errBody.slice(0, 200)}`);
+    }
+
+    const data = await res.json();
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) throw new Error('No content returned from OpenAI');
+    return content;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/**
+ * Call Anthropic Claude API via direct HTTPS.
+ */
+async function callAnthropic(
+  systemPrompt: string,
+  userPrompt: string,
+  options: { model?: string; apiKey?: string; temperature?: number; timeoutMs?: number }
+): Promise<string> {
+  const apiKey = options.apiKey || process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    throw new Error('ANTHROPIC_API_KEY is not configured.');
+  }
+
+  const model = options.model || 'claude-3-7-sonnet-20250219';
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 35000);
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 4096,
+        system: `${systemPrompt}\n\nIMPORTANT: Return ONLY valid JSON format.`,
+        messages: [{ role: 'user', content: userPrompt }],
+        temperature: options.temperature ?? 0.2,
+      }),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const errBody = await res.text();
+      throw new Error(`Anthropic Claude API error (${res.status}): ${errBody.slice(0, 200)}`);
+    }
+
+    const data = await res.json();
+    const text = data.content?.[0]?.text;
+    if (!text) throw new Error('No text returned from Anthropic Claude');
+    return text;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/**
+ * Call DeepSeek API via direct HTTPS (OpenAI-compatible).
+ */
+async function callDeepSeek(
+  systemPrompt: string,
+  userPrompt: string,
+  options: { model?: string; apiKey?: string; temperature?: number; timeoutMs?: number }
+): Promise<string> {
+  const apiKey = options.apiKey || process.env.DEEPSEEK_API_KEY;
+  if (!apiKey) {
+    throw new Error('DEEPSEEK_API_KEY is not configured.');
+  }
+
+  const model = options.model || 'deepseek-chat';
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 35000);
+
+  try {
+    const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: `${systemPrompt}\n\nReturn strictly valid JSON only.` },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: options.temperature ?? 0.2,
+        response_format: { type: 'json_object' },
+      }),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const errBody = await res.text();
+      throw new Error(`DeepSeek API error (${res.status}): ${errBody.slice(0, 200)}`);
+    }
+
+    const data = await res.json();
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) throw new Error('No content returned from DeepSeek');
+    return content;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/**
+ * Call Self-Hosted LLM (Ollama, vLLM, LocalAI) or Custom OpenAI-compatible endpoint.
+ */
+async function callCustomOpenAI(
+  systemPrompt: string,
+  userPrompt: string,
+  options: {
+    baseUrl?: string;
+    model?: string;
+    apiKey?: string;
+    temperature?: number;
+    timeoutMs?: number;
+    providerName?: string;
+  }
+): Promise<string> {
+  let baseUrl = (options.baseUrl || process.env.CUSTOM_LLM_BASE_URL || 'http://localhost:11434/v1').trim();
+  baseUrl = baseUrl.replace(/\/+$/, '');
+  const endpoint = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
+
+  const apiKey = options.apiKey || process.env.CUSTOM_LLM_API_KEY || 'not-needed';
+  const model = options.model || process.env.CUSTOM_LLM_MODEL || 'gemma2:9b';
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 40000);
+
+  try {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (apiKey && apiKey !== 'not-needed') {
+      headers.Authorization = `Bearer ${apiKey}`;
+    }
+
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: `${systemPrompt}\n\nRespond ONLY with valid JSON.` },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: options.temperature ?? 0.2,
+        stream: false,
+      }),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const errBody = await res.text();
+      throw new Error(
+        `${options.providerName || 'Self-Hosted LLM'} endpoint error (${res.status} at ${baseUrl}): ${errBody.slice(0, 200)}`
+      );
+    }
+
+    const data = await res.json();
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) throw new Error(`No content returned from ${options.providerName || 'custom endpoint'}`);
+    return content;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/**
+ * Unified AI execution router that runs the user's chosen provider & model,
+ * with seamless fallback to Gemini or heuristic recovery when external service keys
+ * or networks are unavailable.
+ */
+export async function executeUnifiedAI(
+  systemPrompt: string,
+  userPrompt: string,
+  options?: AIExecutionOptions
+): Promise<UnifiedGenerationResult> {
+  const provider: AIProvider = options?.provider || 'gemini';
+  const model = options?.model || DEFAULT_GEMINI_MODEL;
+  const temp = options?.temperature ?? 0.2;
+
+  console.log(`[Unified AI Router] Request received for provider: '${provider}', model: '${model}'`);
+
+  // 1. Google Gemini
+  if (provider === 'gemini') {
+    try {
+      const res = await executeGeminiWithRetry(systemPrompt, userPrompt, temp, options?.timeoutMs || 28000, model, options?.customApiKey);
+      return {
+        text: res.text,
+        provider: 'gemini',
+        modelUsed: res.modelUsed,
+        fallbackTriggered: res.fallbackTriggered,
+      };
+    } catch (geminiErr: any) {
+      throw geminiErr;
+    }
+  }
+
+  // 2. OpenAI
+  if (provider === 'openai') {
+    try {
+      const text = await callOpenAI(systemPrompt, userPrompt, {
+        model,
+        apiKey: options?.customApiKey,
+        temperature: temp,
+        timeoutMs: options?.timeoutMs,
+      });
+      return {
+        text,
+        provider: 'openai',
+        modelUsed: model,
+        fallbackTriggered: false,
+      };
+    } catch (openAiErr: any) {
+      console.warn(`[Unified AI Router] OpenAI (${model}) notice: ${openAiErr.message}. Gracefully engaging Gemini resilience chain...`);
+      const fallback = await executeGeminiWithRetry(systemPrompt, userPrompt, temp);
+      return {
+        text: fallback.text,
+        provider: 'gemini',
+        modelUsed: fallback.modelUsed,
+        fallbackTriggered: true,
+        notice: `OpenAI was unreachable (${openAiErr.message}). Output was synthesized seamlessly via Gemini fallback.`,
+      };
+    }
+  }
+
+  // 3. Anthropic Claude
+  if (provider === 'anthropic') {
+    try {
+      const text = await callAnthropic(systemPrompt, userPrompt, {
+        model,
+        apiKey: options?.customApiKey,
+        temperature: temp,
+        timeoutMs: options?.timeoutMs,
+      });
+      return {
+        text,
+        provider: 'anthropic',
+        modelUsed: model,
+        fallbackTriggered: false,
+      };
+    } catch (anthropicErr: any) {
+      console.warn(`[Unified AI Router] Anthropic (${model}) notice: ${anthropicErr.message}. Gracefully engaging Gemini resilience chain...`);
+      const fallback = await executeGeminiWithRetry(systemPrompt, userPrompt, temp);
+      return {
+        text: fallback.text,
+        provider: 'gemini',
+        modelUsed: fallback.modelUsed,
+        fallbackTriggered: true,
+        notice: `Anthropic Claude was unreachable (${anthropicErr.message}). Output was synthesized seamlessly via Gemini fallback.`,
+      };
+    }
+  }
+
+  // 4. DeepSeek
+  if (provider === 'deepseek') {
+    try {
+      const text = await callDeepSeek(systemPrompt, userPrompt, {
+        model,
+        apiKey: options?.customApiKey,
+        temperature: temp,
+        timeoutMs: options?.timeoutMs,
+      });
+      return {
+        text,
+        provider: 'deepseek',
+        modelUsed: model,
+        fallbackTriggered: false,
+      };
+    } catch (deepseekErr: any) {
+      console.warn(`[Unified AI Router] DeepSeek (${model}) notice: ${deepseekErr.message}. Gracefully engaging Gemini resilience chain...`);
+      const fallback = await executeGeminiWithRetry(systemPrompt, userPrompt, temp);
+      return {
+        text: fallback.text,
+        provider: 'gemini',
+        modelUsed: fallback.modelUsed,
+        fallbackTriggered: true,
+        notice: `DeepSeek was unreachable (${deepseekErr.message}). Output was synthesized seamlessly via Gemini fallback.`,
+      };
+    }
+  }
+
+  // 5. Self-Hosted (Ollama / vLLM / Gemma / DeepSeek-R1) or Custom OpenAI
+  if (provider === 'self_hosted' || provider === 'custom_openai') {
+    try {
+      const text = await callCustomOpenAI(systemPrompt, userPrompt, {
+        baseUrl: options?.customBaseUrl,
+        model,
+        apiKey: options?.customApiKey,
+        temperature: temp,
+        timeoutMs: options?.timeoutMs,
+        providerName: provider === 'self_hosted' ? 'Self-Hosted LLM' : 'Custom Cloud Endpoint',
+      });
+      return {
+        text,
+        provider,
+        modelUsed: model,
+        fallbackTriggered: false,
+      };
+    } catch (customErr: any) {
+      console.warn(`[Unified AI Router] Custom/Self-Hosted (${model}) notice: ${customErr.message}. Gracefully engaging Gemini resilience chain...`);
+      const fallback = await executeGeminiWithRetry(systemPrompt, userPrompt, temp);
+      return {
+        text: fallback.text,
+        provider: 'gemini',
+        modelUsed: fallback.modelUsed,
+        fallbackTriggered: true,
+        notice: `Target endpoint was unreachable (${customErr.message}). Output was synthesized seamlessly via Gemini fallback.`,
+      };
+    }
+  }
+
+  // Default fallback
+  const res = await executeGeminiWithRetry(systemPrompt, userPrompt, temp);
+  return {
+    text: res.text,
+    provider: 'gemini',
+    modelUsed: res.modelUsed,
+    fallbackTriggered: res.fallbackTriggered,
+  };
+}
+
+/**
+ * Diagnostic test tool to verify connection to any configured AI model/provider.
+ */
+export async function testAIConnection(config: AIConfigSettings): Promise<{
+  success: boolean;
+  message: string;
+  latency_ms: number;
+  provider: AIProvider;
+  model_tested: string;
+}> {
+  const startTime = Date.now();
+  const testSystem = 'You are a latency and connectivity test probe. Respond strictly with JSON: {"status": "ok", "message": "Connection verified successfully"}';
+  const testUser = 'Ping test.';
+
+  try {
+    const result = await executeUnifiedAI(testSystem, testUser, {
+      provider: config.provider,
+      model: config.model,
+      customBaseUrl: config.customBaseUrl,
+      customApiKey: config.customApiKey,
+      temperature: 0.1,
+      timeoutMs: 12000,
+    });
+
+    const parsed = cleanJsonResponse(result.text);
+    const latency_ms = Date.now() - startTime;
+
+    return {
+      success: true,
+      message: result.fallbackTriggered
+        ? `Connected via fallback (${result.modelUsed}): ${result.notice || 'Active'}`
+        : `Connected successfully to ${config.provider.toUpperCase()} [${result.modelUsed}] in ${latency_ms}ms!`,
+      latency_ms,
+      provider: result.provider,
+      model_tested: result.modelUsed,
+    };
+  } catch (err: any) {
+    const latency_ms = Date.now() - startTime;
+    return {
+      success: false,
+      message: `Connection failed: ${err.message || String(err)}`,
+      latency_ms,
+      provider: config.provider,
+      model_tested: config.model,
+    };
+  }
+}
+
+/**
+ * Returns list of supported providers and detected environment flags.
+ */
+export function getAvailableAIProviders() {
+  return {
+    providers: [
+      { id: 'gemini', name: 'Google Gemini', isConfigured: Boolean(process.env.GEMINI_API_KEY) },
+      { id: 'openai', name: 'OpenAI', isConfigured: Boolean(process.env.OPENAI_API_KEY) },
+      { id: 'anthropic', name: 'Anthropic Claude', isConfigured: Boolean(process.env.ANTHROPIC_API_KEY) },
+      { id: 'deepseek', name: 'DeepSeek', isConfigured: Boolean(process.env.DEEPSEEK_API_KEY) },
+      {
+        id: 'self_hosted',
+        name: 'Self-Hosted LLM (Ollama / vLLM / Gemma / DeepSeek)',
+        isConfigured: Boolean(process.env.CUSTOM_LLM_BASE_URL),
+        defaultBaseUrl: process.env.CUSTOM_LLM_BASE_URL || 'http://localhost:11434/v1',
+      },
+      { id: 'custom_openai', name: 'Custom OpenAI-Compatible API', isConfigured: false },
+    ],
+    presetModels: PRESET_MODELS,
+    environment_status: {
+      has_gemini_key: Boolean(process.env.GEMINI_API_KEY),
+      has_openai_key: Boolean(process.env.OPENAI_API_KEY),
+      has_anthropic_key: Boolean(process.env.ANTHROPIC_API_KEY),
+      has_deepseek_key: Boolean(process.env.DEEPSEEK_API_KEY),
+      has_custom_llm_base_url: Boolean(process.env.CUSTOM_LLM_BASE_URL),
+    },
+  };
+}
+
 
 /**
  * Deterministic Heuristic Synthesizer for Stage 2: Master Profile
@@ -640,7 +1211,8 @@ export async function analyzeJobSourceText(
     url?: string;
     fileName?: string;
   },
-  candidateProfile?: MasterProfile | null
+  candidateProfile?: MasterProfile | null,
+  ai_config?: AIConfigSettings
 ): Promise<any> {
   const systemPrompt = `You are an expert Technical Job Specification Parser and Career Opportunity Analyst.
 Analyze the provided content retrieved from a ${sourceMeta.sourceType} ${sourceMeta.url ? `(URL: ${sourceMeta.url})` : ''} ${sourceMeta.fileName ? `(File: ${sourceMeta.fileName})` : ''}.
@@ -694,7 +1266,12 @@ Candidate Skills: ${JSON.stringify(candidateProfile?.skills || {})}
 Headline: ${candidateProfile?.headline || ''}`;
 
   try {
-    const { text } = await executeGeminiWithRetry(systemPrompt, userPrompt);
+    const { text } = await executeUnifiedAI(systemPrompt, userPrompt, {
+      provider: ai_config?.provider,
+      model: ai_config?.model,
+      customBaseUrl: ai_config?.customBaseUrl,
+      customApiKey: ai_config?.customApiKey,
+    });
     const parsed = cleanJsonResponse(text);
     return parsed;
   } catch (_err: any) {
@@ -702,6 +1279,7 @@ Headline: ${candidateProfile?.headline || ''}`;
     return buildHeuristicJobExtraction(sourceText, sourceMeta);
   }
 }
+
 
 export { cleanJsonResponse };
 

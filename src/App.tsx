@@ -1,10 +1,15 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { PipelineFlowHeader } from './components/PipelineFlowHeader';
 import { ExperienceParserView } from './components/ExperienceParserView';
 import { MasterProfileView } from './components/MasterProfileView';
 import { JobMatcherView } from './components/JobMatcherView';
 import { TailoredResumeView } from './components/TailoredResumeView';
 import { ArchitectureModal } from './components/ArchitectureModal';
+import { AuthModal } from './components/AuthModal';
+import { ProfileFillingModal } from './components/ProfileFillingModal';
+import { ExperienceManagerModal } from './components/ExperienceManagerModal';
+import { AIModelSettingsModal } from './components/AIModelSettingsModal';
+import { DatabaseSettingsModal } from './components/DatabaseSettingsModal';
 import { 
   GitHubProfileData, 
   MasterProfile, 
@@ -12,7 +17,11 @@ import {
   ATSResume, 
   PipelineStage, 
   StageStatus,
-  ExtractedJobOpportunity 
+  ExtractedJobOpportunity,
+  UserAccount,
+  UserProfileInfo,
+  UserExperienceItem,
+  AIConfigSettings
 } from './types';
 import { SAMPLE_PROFILES, SAMPLE_JOB_DESCRIPTIONS } from './data/presets';
 import { 
@@ -30,6 +39,37 @@ import {
 export default function App() {
   // Current active stage view
   const [currentStage, setCurrentStage] = useState<PipelineStage>(1);
+
+  // User Authentication & Personal Profile State
+  const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => {
+    try {
+      const stored = localStorage.getItem('resume_job_matcher_auth_user');
+      return stored ? JSON.parse(stored) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const [userProfile, setUserProfile] = useState<UserProfileInfo | null>(null);
+  const [experiences, setExperiences] = useState<UserExperienceItem[]>([]);
+
+  // Modals state
+  const [authModalOpen, setAuthModalOpen] = useState<boolean>(false);
+  const [profileModalOpen, setProfileModalOpen] = useState<boolean>(false);
+  const [experienceModalOpen, setExperienceModalOpen] = useState<boolean>(false);
+  const [aiModalOpen, setAiModalOpen] = useState<boolean>(false);
+  const [dbModalOpen, setDbModalOpen] = useState<boolean>(false);
+  const [architectureModalOpen, setArchitectureModalOpen] = useState<boolean>(false);
+
+  // Custom AI Configuration (Gemini, OpenAI, Claude, DeepSeek, or Self-Hosted)
+  const [aiConfig, setAiConfig] = useState<AIConfigSettings>(() => {
+    try {
+      const saved = localStorage.getItem('resume_job_matcher_ai_config');
+      return saved ? JSON.parse(saved) : { provider: 'gemini', model: 'gemini-3.8-flash', temperature: 0.2 };
+    } catch {
+      return { provider: 'gemini', model: 'gemini-3.8-flash', temperature: 0.2 };
+    }
+  });
 
   // Stage execution status tracking
   const [stagesStatus, setStagesStatus] = useState<Record<PipelineStage, StageStatus>>({
@@ -65,7 +105,6 @@ export default function App() {
   // Loading and Autonomous Execution States
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isAutonomousRunning, setIsAutonomousRunning] = useState<boolean>(false);
-  const [architectureModalOpen, setArchitectureModalOpen] = useState<boolean>(false);
 
   // Console Logs Trace
   const [pipelineLogs, setPipelineLogs] = useState<
@@ -86,6 +125,160 @@ export default function App() {
       { id: `${Date.now()}-${Math.random()}`, time, stage, message, type },
       ...prev.slice(0, 30),
     ]);
+  };
+
+  // Synchronize authenticated user and fetch their personal candidate profile and experiences
+  useEffect(() => {
+    const fetchUserData = async () => {
+      const token = localStorage.getItem('resume_job_matcher_auth_token');
+      if (!token) return;
+
+      try {
+        const [profileRes, expRes] = await Promise.all([
+          fetch('/api/user/profile', { headers: { 'x-user-id': token } }),
+          fetch('/api/user/experiences', { headers: { 'x-user-id': token } }),
+        ]);
+
+        if (profileRes.ok) {
+          const pData = await profileRes.json();
+          if (pData.profile) {
+            setUserProfile(pData.profile);
+            if (pData.profile.name) {
+              setProfileData((prev) => prev ? { ...prev, name: pData.profile.name } : prev);
+            }
+          }
+        }
+
+        if (expRes.ok) {
+          const eData = await expRes.json();
+          if (eData.experiences) {
+            setExperiences(eData.experiences);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load user data:', err);
+      }
+    };
+
+    fetchUserData();
+  }, [currentUser?.id]);
+
+  const handleSignOut = () => {
+    localStorage.removeItem('resume_job_matcher_auth_user');
+    localStorage.removeItem('resume_job_matcher_auth_token');
+    setCurrentUser(null);
+    setUserProfile(null);
+    setExperiences([]);
+    addLog(1, 'Signed out of user account. Switched to guest mode.', 'info');
+  };
+
+  const handleSaveProfile = async (updated: UserProfileInfo) => {
+    const token = localStorage.getItem('resume_job_matcher_auth_token') || 'guest';
+    const res = await fetch('/api/user/profile', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-user-id': token,
+      },
+      body: JSON.stringify({ profile: updated }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to update profile');
+    setUserProfile(data.profile);
+    addLog(1, 'Candidate profile information updated and saved.', 'success');
+  };
+
+  const handleAddExperience = async (exp: Omit<UserExperienceItem, 'id'>) => {
+    const token = localStorage.getItem('resume_job_matcher_auth_token') || 'guest';
+    const res = await fetch('/api/user/experiences', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-user-id': token,
+      },
+      body: JSON.stringify(exp),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to add experience');
+    setExperiences(data.experiences);
+    addLog(1, `Added experience item "${exp.title}" to database.`, 'success');
+  };
+
+  const handleUpdateExperience = async (id: string, updated: Partial<UserExperienceItem>) => {
+    const token = localStorage.getItem('resume_job_matcher_auth_token') || 'guest';
+    const res = await fetch(`/api/user/experiences/${id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-user-id': token,
+      },
+      body: JSON.stringify(updated),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to update experience');
+    setExperiences(data.experiences);
+  };
+
+  const handleDeleteExperience = async (id: string) => {
+    const token = localStorage.getItem('resume_job_matcher_auth_token') || 'guest';
+    const res = await fetch(`/api/user/experiences/${id}`, {
+      method: 'DELETE',
+      headers: { 'x-user-id': token },
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to delete experience');
+    setExperiences(data.experiences);
+    addLog(1, 'Experience removed from database.', 'info');
+  };
+
+  const handleAIUpdateExperience = async (id: string, userPrompt: string) => {
+    const token = localStorage.getItem('resume_job_matcher_auth_token') || 'guest';
+    const res = await fetch(`/api/user/experiences/${id}/ai-enhance`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-user-id': token,
+      },
+      body: JSON.stringify({ userPrompt, ai_config: aiConfig }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'AI rewrite failed');
+    setExperiences(data.experiences);
+    addLog(1, 'Experience updated and rewritten with AI assistance.', 'success');
+  };
+
+  const handleSyncGitHubExperiences = async () => {
+    if (!profileData?.repositories || profileData.repositories.length === 0) {
+      throw new Error('No extracted GitHub repositories found to sync.');
+    }
+    const token = localStorage.getItem('resume_job_matcher_auth_token') || 'guest';
+    const items = profileData.repositories.slice(0, 8).map((repo) => ({
+      title: repo.name,
+      company_or_org: `@${profileData.username}`,
+      role_type: 'opensource' as const,
+      start_date: '2023',
+      end_date: 'Present',
+      is_current: true,
+      tech_stack: Object.keys(repo.languages || {}),
+      bullets: repo.recent_commits?.length ? repo.recent_commits : [repo.description || 'Core maintainer and architect.'],
+      quantified_impact: [`${repo.stars || 0} GitHub Stars`, `${repo.forks || 0} Forks`],
+      repo_url: repo.html_url,
+      stars: repo.stars,
+      source: 'github_activity' as const,
+    }));
+
+    const res = await fetch('/api/user/experiences/bulk', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-user-id': token,
+      },
+      body: JSON.stringify({ items }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Sync failed');
+    setExperiences(data.experiences);
+    addLog(1, `Synced ${items.length} GitHub repositories to experiences list.`, 'success');
   };
 
   // Stage 1: Trigger GitHub Extraction
@@ -139,15 +332,20 @@ export default function App() {
       ...prev,
       2: { stage: 2, status: 'in_progress', started_at: Date.now() },
     }));
-    addLog(2, 'Calling Gemini 3.8 to synthesize Master Developer Profile & quantified impact points...');
+    addLog(2, `Calling ${aiConfig.provider.toUpperCase()} (${aiConfig.model}) to synthesize Master Developer Profile...`);
 
     try {
+      const token = localStorage.getItem('resume_job_matcher_auth_token') || 'guest';
       const response = await fetch('/api/synthesize-profile', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-user-id': token,
+        },
         body: JSON.stringify({
           raw_github_data: profileData,
           extra_notes: extraNotes,
+          ai_config: aiConfig,
         }),
       });
 
@@ -163,7 +361,7 @@ export default function App() {
       }));
       const engineNote = data.meta?.fallback_mode
         ? ` [Engine: ${data.meta.engine} - auto-recovered]`
-        : ` [Engine: ${data.meta?.engine || 'gemini-3.1-flash-lite'}]`;
+        : ` [Engine: ${data.meta?.engine || aiConfig.model}]`;
       addLog(2, `Master Profile generated for ${data.master_profile.candidate_name}${engineNote}: ${data.master_profile.projects?.length || 0} projects & ${data.master_profile.suggested_bullet_points?.length || 0} bullets.`, 'success');
     } catch (err: any) {
       setStagesStatus((prev) => ({
@@ -189,15 +387,20 @@ export default function App() {
       ...prev,
       3: { stage: 3, status: 'in_progress', started_at: Date.now() },
     }));
-    addLog(3, 'Analyzing candidate profile against Job Description with Gemini...');
+    addLog(3, `Analyzing candidate profile against Job Description with ${aiConfig.provider.toUpperCase()} (${aiConfig.model})...`);
 
     try {
+      const token = localStorage.getItem('resume_job_matcher_auth_token') || 'guest';
       const response = await fetch('/api/match-job', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-user-id': token,
+        },
         body: JSON.stringify({
           master_profile: masterProfile,
           job_description: jobDescription,
+          ai_config: aiConfig,
         }),
       });
 
@@ -213,7 +416,7 @@ export default function App() {
       }));
       const engineNote = data.meta?.fallback_mode
         ? ` [Engine: ${data.meta.engine} - auto-recovered]`
-        : ` [Engine: ${data.meta?.engine || 'gemini-3.1-flash-lite'}]`;
+        : ` [Engine: ${data.meta?.engine || aiConfig.model}]`;
       addLog(3, `Job Match Score: ${data.match_analysis.match_score}%${engineNote}. Identified ${data.match_analysis.matching_keywords?.length || 0} matching keywords and ${data.match_analysis.missing_skills?.length || 0} gaps.`, 'success');
     } catch (err: any) {
       setStagesStatus((prev) => ({
@@ -236,6 +439,7 @@ export default function App() {
 
     setIsLoading(true);
     let currentMatch = matchAnalysis;
+    const token = localStorage.getItem('resume_job_matcher_auth_token') || 'guest';
 
     try {
       if (!currentMatch) {
@@ -243,14 +447,18 @@ export default function App() {
           ...prev,
           3: { stage: 3, status: 'in_progress', started_at: Date.now() },
         }));
-        addLog(3, 'Evaluating requirements for target opportunity with Gemini...');
+        addLog(3, `Evaluating requirements for target opportunity with ${aiConfig.provider.toUpperCase()} (${aiConfig.model})...`);
 
         const matchRes = await fetch('/api/match-job', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json',
+            'x-user-id': token,
+          },
           body: JSON.stringify({
             master_profile: masterProfile,
             job_description: jobDescription,
+            ai_config: aiConfig,
           }),
         });
 
@@ -278,16 +486,20 @@ export default function App() {
 
       const resumeRes = await fetch('/api/generate-tailored-resume', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-user-id': token,
+        },
         body: JSON.stringify({
           master_profile: masterProfile,
           job_description: jobDescription,
           match_analysis: currentMatch,
+          ai_config: aiConfig,
           contact_info: {
-            name: masterProfile.candidate_name || 'Alex Chen',
-            email: 'alex.chen@example.com',
-            location: 'San Francisco, CA',
-            links: ['github.com/alexchen-dev', 'linkedin.com/in/alexchen-dev'],
+            name: userProfile?.name || masterProfile.candidate_name || 'Alex Chen',
+            email: userProfile?.email || 'alex.chen@example.com',
+            location: userProfile?.location || 'San Francisco, CA',
+            links: userProfile?.community_links?.length ? userProfile.community_links : ['github.com/alexchen-dev', 'linkedin.com/in/alexchen-dev'],
           },
         }),
       });
@@ -304,7 +516,7 @@ export default function App() {
       }));
       const engineNote = resumeData.meta?.fallback_mode
         ? ` [Engine: ${resumeData.meta.engine} - auto-recovered]`
-        : ` [Engine: ${resumeData.meta?.engine || 'gemini-3.1-flash-lite'}]`;
+        : ` [Engine: ${resumeData.meta?.engine || aiConfig.model}]`;
       addLog(4, `Tailored ATS Resume created${engineNote} (ATS Score: ${resumeData.tailored_resume.ats_audit?.overall_ats_score || 95}%).`, 'success');
     } catch (err: any) {
       addLog(3, `Error in 1-Click Match & Resume: ${err.message}`, 'error');
@@ -330,17 +542,22 @@ export default function App() {
       ...prev,
       4: { stage: 4, status: 'in_progress', started_at: Date.now() },
     }));
-    addLog(4, 'Synthesizing tailored ATS-compliant resume with anti-hallucination guardrails...');
+    addLog(4, `Synthesizing tailored ATS-compliant resume with ${aiConfig.provider.toUpperCase()} (${aiConfig.model})...`);
 
     try {
+      const token = localStorage.getItem('resume_job_matcher_auth_token') || 'guest';
       const response = await fetch('/api/generate-tailored-resume', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-user-id': token,
+        },
         body: JSON.stringify({
           master_profile: masterProfile,
           job_description: jobDescription,
           match_analysis: matchAnalysis,
           contact_info: contactInfo,
+          ai_config: aiConfig,
         }),
       });
 
@@ -356,7 +573,7 @@ export default function App() {
       }));
       const engineNote = data.meta?.fallback_mode
         ? ` [Engine: ${data.meta.engine} - auto-recovered]`
-        : ` [Engine: ${data.meta?.engine || 'gemini-3.1-flash-lite'}]`;
+        : ` [Engine: ${data.meta?.engine || aiConfig.model}]`;
       addLog(4, `Tailored ATS Resume compiled${engineNote} with overall ATS score: ${data.tailored_resume.ats_audit?.overall_ats_score || 95}%. Anti-hallucination audit verified.`, 'success');
     } catch (err: any) {
       setStagesStatus((prev) => ({
@@ -373,7 +590,7 @@ export default function App() {
   // Full Autonomous Pipeline Runner
   const handleRunAutonomousPipeline = async () => {
     setIsAutonomousRunning(true);
-    addLog(1, '🚀 Starting Full Autonomous 4-Stage Pipeline Execution...', 'info');
+    addLog(1, `🚀 Starting Full Autonomous 4-Stage Pipeline with ${aiConfig.provider.toUpperCase()} (${aiConfig.model})...`, 'info');
 
     try {
       // Stage 1 Check / Extract
@@ -396,14 +613,19 @@ export default function App() {
         ...prev,
         2: { stage: 2, status: 'in_progress', started_at: Date.now() },
       }));
-      addLog(2, 'Stage 2: Synthesizing Master Developer Profile with Gemini 3.8...');
+      addLog(2, `Stage 2: Synthesizing Master Developer Profile with ${aiConfig.provider.toUpperCase()}...`);
 
+      const token = localStorage.getItem('resume_job_matcher_auth_token') || 'guest';
       const synthRes = await fetch('/api/synthesize-profile', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-user-id': token,
+        },
         body: JSON.stringify({
           raw_github_data: activeProfile,
           extra_notes: extraNotes,
+          ai_config: aiConfig,
         }),
       });
       const synthData = await synthRes.json();
@@ -427,10 +649,14 @@ export default function App() {
 
       const matchRes = await fetch('/api/match-job', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-user-id': token,
+        },
         body: JSON.stringify({
           master_profile: activeMasterProfile,
           job_description: jobDescription,
+          ai_config: aiConfig,
         }),
       });
       const matchData = await matchRes.json();
@@ -454,16 +680,20 @@ export default function App() {
 
       const resumeRes = await fetch('/api/generate-tailored-resume', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-user-id': token,
+        },
         body: JSON.stringify({
           master_profile: activeMasterProfile,
           job_description: jobDescription,
           match_analysis: activeMatchAnalysis,
+          ai_config: aiConfig,
           contact_info: {
-            name: activeMasterProfile.candidate_name,
-            email: 'alex.chen@example.com',
-            location: 'San Francisco, CA',
-            links: ['github.com/alexchen-dev', 'linkedin.com/in/alexchen-dev'],
+            name: userProfile?.name || activeMasterProfile.candidate_name,
+            email: userProfile?.email || 'alex.chen@example.com',
+            location: userProfile?.location || 'San Francisco, CA',
+            links: userProfile?.community_links?.length ? userProfile.community_links : ['github.com/alexchen-dev', 'linkedin.com/in/alexchen-dev'],
           },
         }),
       });
@@ -510,6 +740,16 @@ export default function App() {
         isAutonomousRunning={isAutonomousRunning}
         onRunAutonomous={handleRunAutonomousPipeline}
         onReset={handleReset}
+        currentUser={currentUser}
+        userProfile={userProfile}
+        experiencesCount={experiences.length}
+        currentAiConfig={aiConfig}
+        onOpenAiModal={() => setAiModalOpen(true)}
+        onOpenDbModal={() => setDbModalOpen(true)}
+        onOpenAuthModal={() => setAuthModalOpen(true)}
+        onOpenProfileModal={() => setProfileModalOpen(true)}
+        onOpenExperienceModal={() => setExperienceModalOpen(true)}
+        onSignOut={handleSignOut}
       />
 
       {/* Main Stage View Area */}
@@ -583,9 +823,25 @@ export default function App() {
               <Terminal className="w-3.5 h-3.5 text-amber-400" />
               <span>Autonomous Agent Pipeline Trace</span>
               <span className="text-stone-500">•</span>
-              <span className="text-stone-400 text-[11px]">Model: gemini-3.6-flash (Resilient Multi-Model Chain)</span>
+              <span className="text-amber-400 text-[11px] font-semibold">
+                Engine: {aiConfig.provider.toUpperCase()} ({aiConfig.model})
+              </span>
             </div>
             <div className="flex items-center gap-3 text-[11px] text-stone-400">
+              <button
+                onClick={() => setAiModalOpen(true)}
+                className="hover:text-amber-400 underline underline-offset-2 flex items-center gap-1"
+              >
+                <span>Switch AI Model</span>
+              </button>
+              <span>•</span>
+              <button
+                onClick={() => setDbModalOpen(true)}
+                className="hover:text-amber-400 underline underline-offset-2 flex items-center gap-1"
+              >
+                <span>DB Settings</span>
+              </button>
+              <span>•</span>
               <button
                 onClick={() => setArchitectureModalOpen(true)}
                 className="hover:text-amber-400 underline underline-offset-2 flex items-center gap-1"
@@ -629,6 +885,20 @@ export default function App() {
           </div>
           <div className="flex items-center gap-4">
             <button
+              onClick={() => setDbModalOpen(true)}
+              className="text-stone-400 hover:text-stone-200 transition-colors"
+            >
+              PostgreSQL / DB Env
+            </button>
+            <span>•</span>
+            <button
+              onClick={() => setAiModalOpen(true)}
+              className="text-stone-400 hover:text-stone-200 transition-colors"
+            >
+              AI Model Config
+            </button>
+            <span>•</span>
+            <button
               onClick={() => setArchitectureModalOpen(true)}
               className="text-stone-400 hover:text-stone-200 transition-colors"
             >
@@ -642,6 +912,60 @@ export default function App() {
           </div>
         </div>
       </footer>
+
+      {/* Authentication & Security Modal */}
+      <AuthModal
+        isOpen={authModalOpen}
+        onClose={() => setAuthModalOpen(false)}
+        onAuthSuccess={(user, profile) => {
+          setCurrentUser(user);
+          if (profile) setUserProfile(profile);
+          addLog(1, `Authenticated as ${user.email} (${user.name}). Database session active.`, 'success');
+        }}
+        currentUser={currentUser}
+      />
+
+      {/* Candidate Profile Details Modal */}
+      <ProfileFillingModal
+        isOpen={profileModalOpen}
+        onClose={() => setProfileModalOpen(false)}
+        initialProfile={userProfile}
+        githubData={profileData}
+        onSaveProfile={handleSaveProfile}
+      />
+
+      {/* Experience Database Manager Modal */}
+      <ExperienceManagerModal
+        isOpen={experienceModalOpen}
+        onClose={() => setExperienceModalOpen(false)}
+        experiences={experiences}
+        githubData={profileData}
+        onAddExperience={handleAddExperience}
+        onUpdateExperience={handleUpdateExperience}
+        onDeleteExperience={handleDeleteExperience}
+        onAIUpdateExperience={handleAIUpdateExperience}
+        onSyncGitHub={handleSyncGitHubExperiences}
+      />
+
+      {/* Multi-Model AI Configurator Modal */}
+      <AIModelSettingsModal
+        isOpen={aiModalOpen}
+        onClose={() => setAiModalOpen(false)}
+        currentConfig={aiConfig}
+        onSaveConfig={(newConfig) => {
+          setAiConfig(newConfig);
+          try {
+            localStorage.setItem('resume_job_matcher_ai_config', JSON.stringify(newConfig));
+          } catch {}
+          addLog(1, `AI Model configuration updated to ${newConfig.provider.toUpperCase()} (${newConfig.model}).`, 'success');
+        }}
+      />
+
+      {/* Database Connection & Environment Variables Modal */}
+      <DatabaseSettingsModal
+        isOpen={dbModalOpen}
+        onClose={() => setDbModalOpen(false)}
+      />
 
       {/* System Architecture Specifications Modal */}
       <ArchitectureModal

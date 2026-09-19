@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { 
   GitBranch, 
   Cpu, 
@@ -11,9 +11,13 @@ import {
   ShieldCheck,
   User,
   Database,
-  LogIn
+  LogIn,
+  LogOut,
+  Sparkles,
+  Sliders,
+  ChevronDown
 } from 'lucide-react';
-import { PipelineStage, StageStatus, UserAccount, UserProfileInfo } from '../types';
+import { PipelineStage, StageStatus, UserAccount, UserProfileInfo, AIConfigSettings } from '../types';
 
 interface PipelineFlowHeaderProps {
   currentStage: PipelineStage;
@@ -25,9 +29,13 @@ interface PipelineFlowHeaderProps {
   currentUser?: UserAccount | null;
   userProfile?: UserProfileInfo | null;
   experiencesCount?: number;
+  currentAiConfig?: AIConfigSettings;
+  onOpenAiModal?: () => void;
+  onOpenDbModal?: () => void;
   onOpenAuthModal?: () => void;
   onOpenProfileModal?: () => void;
   onOpenExperienceModal?: () => void;
+  onSignOut?: () => void;
 }
 
 export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
@@ -40,10 +48,16 @@ export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
   currentUser,
   userProfile,
   experiencesCount = 0,
+  currentAiConfig,
+  onOpenAiModal,
+  onOpenDbModal,
   onOpenAuthModal,
   onOpenProfileModal,
   onOpenExperienceModal,
+  onSignOut,
 }) => {
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+
   const stageDefs = [
     {
       stage: 1 as PipelineStage,
@@ -71,6 +85,22 @@ export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
     },
   ];
 
+  const getProviderBadge = () => {
+    const prov = currentAiConfig?.provider || 'gemini';
+    const model = currentAiConfig?.model || 'gemini-3.8-flash';
+    const displayModel = model.length > 18 ? `${model.slice(0, 16)}…` : model;
+    
+    let icon = '✨';
+    if (prov === 'openai') icon = '🟢';
+    else if (prov === 'anthropic') icon = '🟠';
+    else if (prov === 'deepseek') icon = '🔵';
+    else if (prov === 'custom' || prov === 'self_hosted' || prov === 'custom_openai') icon = '🖥️';
+
+    return { icon, displayModel, prov };
+  };
+
+  const aiBadge = getProviderBadge();
+
   return (
     <header className="no-print bg-stone-900 border-b border-stone-800 text-stone-200">
       {/* Top Banner */}
@@ -96,6 +126,35 @@ export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
 
         {/* User Account & Experience DB & Action Controls */}
         <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-end">
+          {/* AI Model Configurator Shortcut */}
+          {onOpenAiModal && (
+            <button
+              id="btn-header-ai-config"
+              onClick={onOpenAiModal}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-stone-950 hover:bg-stone-800 text-stone-300 border border-stone-800 hover:border-amber-500/40 transition-colors shadow-sm"
+              title="Change AI model: Gemini, OpenAI, Claude, DeepSeek, or Self-Hosted"
+            >
+              <span>{aiBadge.icon}</span>
+              <span className="font-mono text-[11px] text-amber-300 truncate max-w-[120px]">
+                {aiBadge.displayModel}
+              </span>
+              <Sliders className="w-3 h-3 text-stone-500" />
+            </button>
+          )}
+
+          {/* Database Env Status Shortcut */}
+          {onOpenDbModal && (
+            <button
+              id="btn-header-db-status"
+              onClick={onOpenDbModal}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-stone-950 hover:bg-stone-800 text-stone-300 border border-stone-800 hover:border-stone-700 transition-colors"
+              title="Database persistence & environment variable status"
+            >
+              <Database className="w-3.5 h-3.5 text-amber-400" />
+              <span className="text-[11px]">DB Status</span>
+            </button>
+          )}
+
           {/* Experience DB Shortcut */}
           {onOpenExperienceModal && (
             <button
@@ -104,7 +163,6 @@ export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
               className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-stone-950 hover:bg-stone-800 text-stone-300 border border-stone-800 transition-colors"
               title="Manage stored GitHub and career experiences in database"
             >
-              <Database className="w-3.5 h-3.5 text-amber-400" />
               <span>Experiences</span>
               <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300">
                 {experiencesCount}
@@ -136,36 +194,64 @@ export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
             </button>
           )}
 
-          {/* Auth Button */}
-          {onOpenAuthModal && (
-            <button
-              id="btn-header-auth-modal"
-              onClick={onOpenAuthModal}
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium border transition-colors ${
-                currentUser
-                  ? 'bg-stone-950 text-stone-300 border-stone-800 hover:bg-stone-800'
-                  : 'bg-amber-500/10 text-amber-400 border-amber-500/30 hover:bg-amber-500/20'
-              }`}
-            >
-              {currentUser ? (
-                <>
+          {/* Auth Button & Dropdown */}
+          <div className="relative">
+            {currentUser ? (
+              <div>
+                <button
+                  id="btn-header-user-menu"
+                  onClick={() => setUserMenuOpen(!userMenuOpen)}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-stone-950 text-stone-300 border border-stone-800 hover:bg-stone-800 transition-colors"
+                >
                   <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                  <span className="truncate max-w-[120px] font-mono text-[11px]">
+                  <span className="truncate max-w-[110px] font-mono text-[11px]">
                     {currentUser.email.split('@')[0]}
                   </span>
-                </>
-              ) : (
-                <>
+                  <ChevronDown className="w-3 h-3 text-stone-500" />
+                </button>
+
+                {userMenuOpen && (
+                  <div 
+                    className="absolute right-0 mt-1.5 w-52 bg-stone-900 border border-stone-800 rounded-xl shadow-2xl p-2 z-50 text-xs space-y-1"
+                    onMouseLeave={() => setUserMenuOpen(false)}
+                  >
+                    <div className="px-2.5 py-1.5 border-b border-stone-800 text-[11px] text-stone-400">
+                      <div className="font-semibold text-stone-200 truncate">{currentUser.name}</div>
+                      <div className="font-mono text-stone-500 truncate">{currentUser.email}</div>
+                    </div>
+                    {onOpenProfileModal && (
+                      <button
+                        onClick={() => { setUserMenuOpen(false); onOpenProfileModal(); }}
+                        className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-stone-800 text-stone-300 flex items-center gap-2"
+                      >
+                        <User className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Edit Candidate Profile</span>
+                      </button>
+                    )}
+                    {onSignOut && (
+                      <button
+                        onClick={() => { setUserMenuOpen(false); onSignOut(); }}
+                        className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-red-500/10 text-red-300 flex items-center gap-2"
+                      >
+                        <LogOut className="w-3.5 h-3.5 text-red-400" />
+                        <span>Sign Out</span>
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : (
+              onOpenAuthModal && (
+                <button
+                  id="btn-header-auth-modal"
+                  onClick={onOpenAuthModal}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20 transition-colors"
+                >
                   <LogIn className="w-3.5 h-3.5" />
                   <span>Sign In / Register</span>
-                </>
-              )}
-            </button>
-          )}
-
-          <div className="hidden xl:flex items-center gap-1.5 text-xs text-stone-400 bg-stone-950/60 px-2.5 py-1.5 rounded-md border border-stone-800">
-            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Anti-Hallucination Active</span>
+                </button>
+              )
+            )}
           </div>
 
           <button
@@ -269,3 +355,4 @@ export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
     </header>
   );
 };
+
