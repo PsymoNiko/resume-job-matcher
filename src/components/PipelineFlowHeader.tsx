@@ -8,9 +8,12 @@ import {
   CheckCircle2, 
   Loader2, 
   RotateCcw,
-  ShieldCheck
+  ShieldCheck,
+  User,
+  Database,
+  LogIn
 } from 'lucide-react';
-import { PipelineStage, StageStatus } from '../types';
+import { PipelineStage, StageStatus, UserAccount, UserProfileInfo } from '../types';
 
 interface PipelineFlowHeaderProps {
   currentStage: PipelineStage;
@@ -19,6 +22,12 @@ interface PipelineFlowHeaderProps {
   isAutonomousRunning: boolean;
   onRunAutonomous: () => void;
   onReset: () => void;
+  currentUser?: UserAccount | null;
+  userProfile?: UserProfileInfo | null;
+  experiencesCount?: number;
+  onOpenAuthModal?: () => void;
+  onOpenProfileModal?: () => void;
+  onOpenExperienceModal?: () => void;
 }
 
 export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
@@ -28,6 +37,12 @@ export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
   isAutonomousRunning,
   onRunAutonomous,
   onReset,
+  currentUser,
+  userProfile,
+  experiencesCount = 0,
+  onOpenAuthModal,
+  onOpenProfileModal,
+  onOpenExperienceModal,
 }) => {
   const stageDefs = [
     {
@@ -59,7 +74,7 @@ export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
   return (
     <header className="no-print bg-stone-900 border-b border-stone-800 text-stone-200">
       {/* Top Banner */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 border-b border-stone-800/80">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 border-b border-stone-800/80">
         <div className="flex items-center gap-3">
           <div className="h-9 w-9 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
             <Cpu className="w-5 h-5" />
@@ -70,7 +85,7 @@ export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
                 Self-Analyzer AI Agent
               </h1>
               <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-stone-800 border border-stone-700 text-stone-400">
-                4-Stage Autonomous Pipeline
+                Autonomous Pipeline
               </span>
             </div>
             <p className="text-xs text-stone-400">
@@ -79,11 +94,78 @@ export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
           </div>
         </div>
 
-        {/* Global Pipeline Action Controls */}
-        <div className="flex items-center gap-2.5 w-full md:w-auto justify-end">
-          <div className="hidden lg:flex items-center gap-1.5 text-xs text-stone-400 bg-stone-950/60 px-3 py-1.5 rounded-md border border-stone-800">
+        {/* User Account & Experience DB & Action Controls */}
+        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-end">
+          {/* Experience DB Shortcut */}
+          {onOpenExperienceModal && (
+            <button
+              id="btn-header-experiences-db"
+              onClick={onOpenExperienceModal}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-stone-950 hover:bg-stone-800 text-stone-300 border border-stone-800 transition-colors"
+              title="Manage stored GitHub and career experiences in database"
+            >
+              <Database className="w-3.5 h-3.5 text-amber-400" />
+              <span>Experiences</span>
+              <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300">
+                {experiencesCount}
+              </span>
+            </button>
+          )}
+
+          {/* Profile Filling Shortcut */}
+          {onOpenProfileModal && (
+            <button
+              id="btn-header-profile-filling"
+              onClick={onOpenProfileModal}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-stone-950 hover:bg-stone-800 text-stone-300 border border-stone-800 transition-colors"
+              title="Fill personal info, phone, email, avatar, and community links"
+            >
+              {userProfile?.avatar_url ? (
+                <img
+                  src={userProfile.avatar_url}
+                  alt="avatar"
+                  className="w-4 h-4 rounded-full object-cover"
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <User className="w-3.5 h-3.5 text-amber-400" />
+              )}
+              <span className="truncate max-w-[110px]">
+                {userProfile?.name ? userProfile.name.split(' ')[0] : 'Profile Info'}
+              </span>
+            </button>
+          )}
+
+          {/* Auth Button */}
+          {onOpenAuthModal && (
+            <button
+              id="btn-header-auth-modal"
+              onClick={onOpenAuthModal}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium border transition-colors ${
+                currentUser
+                  ? 'bg-stone-950 text-stone-300 border-stone-800 hover:bg-stone-800'
+                  : 'bg-amber-500/10 text-amber-400 border-amber-500/30 hover:bg-amber-500/20'
+              }`}
+            >
+              {currentUser ? (
+                <>
+                  <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                  <span className="truncate max-w-[120px] font-mono text-[11px]">
+                    {currentUser.email.split('@')[0]}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <LogIn className="w-3.5 h-3.5" />
+                  <span>Sign In / Register</span>
+                </>
+              )}
+            </button>
+          )}
+
+          <div className="hidden xl:flex items-center gap-1.5 text-xs text-stone-400 bg-stone-950/60 px-2.5 py-1.5 rounded-md border border-stone-800">
             <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Anti-Hallucination Guardrail Active</span>
+            <span>Anti-Hallucination Active</span>
           </div>
 
           <button
@@ -104,7 +186,7 @@ export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
             ) : (
               <>
                 <Play className="w-3.5 h-3.5 fill-current" />
-                <span>Run Full Autonomous Pipeline</span>
+                <span>Run Full Pipeline</span>
               </>
             )}
           </button>

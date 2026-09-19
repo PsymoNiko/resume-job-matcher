@@ -14,20 +14,23 @@ import {
   FileCheck2,
   ExternalLink
 } from 'lucide-react';
-import { ATSResume, JobMatchAnalysis, MasterProfile, ExtractedJobOpportunity } from '../types';
+import { ATSResume, JobMatchAnalysis, MasterProfile, ExtractedJobOpportunity, UserProfileInfo } from '../types';
 import { generateATSPDF } from '../utils/pdfGenerator';
 
 interface TailoredResumeViewProps {
   masterProfile: MasterProfile | null;
   matchAnalysis: JobMatchAnalysis | null;
   extractedJob?: ExtractedJobOpportunity | null;
+  userProfile?: UserProfileInfo | null;
   resume: ATSResume | null;
   isLoading: boolean;
   errorMessage?: string;
   onTriggerGenerateResume: (contactInfo: {
     name: string;
     email: string;
+    phone?: string;
     location: string;
+    avatar_url?: string;
     links: string[];
   }) => Promise<void>;
 }
@@ -36,6 +39,7 @@ export const TailoredResumeView: React.FC<TailoredResumeViewProps> = ({
   masterProfile,
   matchAnalysis,
   extractedJob,
+  userProfile,
   resume,
   isLoading,
   errorMessage,
@@ -45,11 +49,37 @@ export const TailoredResumeView: React.FC<TailoredResumeViewProps> = ({
   const [isCopied, setIsCopied] = useState<boolean>(false);
   const [copiedType, setCopiedType] = useState<string>('');
 
-  // Editable contact info state
-  const [contactName, setContactName] = useState<string>(masterProfile?.candidate_name || 'Alex Chen');
-  const [contactEmail, setContactEmail] = useState<string>('alex.chen@example.com');
-  const [contactLocation, setContactLocation] = useState<string>('San Francisco, CA');
-  const [contactLinks, setContactLinks] = useState<string>('github.com/alexchen-dev, linkedin.com/in/alexchen-dev');
+  // Editable contact info state initialized from user personal profile
+  const [contactName, setContactName] = useState<string>(
+    userProfile?.name || masterProfile?.candidate_name || 'Alex Chen'
+  );
+  const [contactEmail, setContactEmail] = useState<string>(
+    userProfile?.email || 'alex.chen@example.com'
+  );
+  const [contactPhone, setContactPhone] = useState<string>(
+    userProfile?.phone || '+1 (415) 555-0192'
+  );
+  const [contactLocation, setContactLocation] = useState<string>(
+    userProfile?.location || 'San Francisco, CA'
+  );
+  const [contactLinks, setContactLinks] = useState<string>(
+    userProfile?.community_links?.length
+      ? userProfile.community_links.join(', ')
+      : 'github.com/alexchen-dev, linkedin.com/in/alexchen-dev'
+  );
+
+  // Keep state in sync if userProfile updates
+  React.useEffect(() => {
+    if (userProfile) {
+      if (userProfile.name) setContactName(userProfile.name);
+      if (userProfile.email) setContactEmail(userProfile.email);
+      if (userProfile.phone) setContactPhone(userProfile.phone);
+      if (userProfile.location) setContactLocation(userProfile.location);
+      if (userProfile.community_links && userProfile.community_links.length > 0) {
+        setContactLinks(userProfile.community_links.join(', '));
+      }
+    }
+  }, [userProfile]);
 
   const handleGenerate = () => {
     const links = contactLinks
@@ -60,7 +90,9 @@ export const TailoredResumeView: React.FC<TailoredResumeViewProps> = ({
     onTriggerGenerateResume({
       name: contactName,
       email: contactEmail,
+      phone: contactPhone,
       location: contactLocation,
+      avatar_url: userProfile?.avatar_url,
       links,
     });
   };
@@ -144,11 +176,12 @@ export const TailoredResumeView: React.FC<TailoredResumeViewProps> = ({
         </div>
 
         {/* Contact Info Customization Bar */}
-        <div className="mt-5 border-t border-stone-800 pt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="mt-5 border-t border-stone-800 pt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
           <div>
             <label className="block text-[11px] font-mono text-stone-400 mb-1">Full Name</label>
             <input
               type="text"
+              id="resume-contact-name"
               value={contactName}
               onChange={(e) => setContactName(e.target.value)}
               className="w-full px-2.5 py-1.5 bg-stone-950 border border-stone-800 rounded text-xs text-stone-200 focus:outline-none focus:border-amber-500 font-mono"
@@ -158,8 +191,20 @@ export const TailoredResumeView: React.FC<TailoredResumeViewProps> = ({
             <label className="block text-[11px] font-mono text-stone-400 mb-1">Email Address</label>
             <input
               type="email"
+              id="resume-contact-email"
               value={contactEmail}
               onChange={(e) => setContactEmail(e.target.value)}
+              className="w-full px-2.5 py-1.5 bg-stone-950 border border-stone-800 rounded text-xs text-stone-200 focus:outline-none focus:border-amber-500 font-mono"
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] font-mono text-stone-400 mb-1">Phone Number</label>
+            <input
+              type="tel"
+              id="resume-contact-phone"
+              value={contactPhone}
+              onChange={(e) => setContactPhone(e.target.value)}
+              placeholder="+1 (415) 555-0192"
               className="w-full px-2.5 py-1.5 bg-stone-950 border border-stone-800 rounded text-xs text-stone-200 focus:outline-none focus:border-amber-500 font-mono"
             />
           </div>
@@ -167,15 +212,17 @@ export const TailoredResumeView: React.FC<TailoredResumeViewProps> = ({
             <label className="block text-[11px] font-mono text-stone-400 mb-1">Location</label>
             <input
               type="text"
+              id="resume-contact-location"
               value={contactLocation}
               onChange={(e) => setContactLocation(e.target.value)}
               className="w-full px-2.5 py-1.5 bg-stone-950 border border-stone-800 rounded text-xs text-stone-200 focus:outline-none focus:border-amber-500 font-mono"
             />
           </div>
           <div>
-            <label className="block text-[11px] font-mono text-stone-400 mb-1">GitHub / LinkedIn Links</label>
+            <label className="block text-[11px] font-mono text-stone-400 mb-1">Community Links</label>
             <input
               type="text"
+              id="resume-contact-links"
               value={contactLinks}
               onChange={(e) => setContactLinks(e.target.value)}
               className="w-full px-2.5 py-1.5 bg-stone-950 border border-stone-800 rounded text-xs text-stone-200 focus:outline-none focus:border-amber-500 font-mono"
@@ -401,11 +448,21 @@ export const TailoredResumeView: React.FC<TailoredResumeViewProps> = ({
                     {resume.parsed_sections.contact_info.title}
                   </p>
                 )}
-                <div className="flex flex-wrap gap-2 text-xs text-stone-600 mt-2 font-mono">
+                <div className="flex flex-wrap items-center gap-2 text-xs text-stone-600 mt-2 font-mono">
                   <span>{resume.parsed_sections?.contact_info?.email || contactEmail}</span>
-                  <span>•</span>
-                  <span>{contactLocation}</span>
-                  {(resume.parsed_sections?.contact_info?.links || []).map((link, idx) => (
+                  {(resume.parsed_sections?.contact_info?.phone || contactPhone) && (
+                    <>
+                      <span>•</span>
+                      <span>{resume.parsed_sections?.contact_info?.phone || contactPhone}</span>
+                    </>
+                  )}
+                  {(resume.parsed_sections?.contact_info?.location || contactLocation) && (
+                    <>
+                      <span>•</span>
+                      <span>{resume.parsed_sections?.contact_info?.location || contactLocation}</span>
+                    </>
+                  )}
+                  {((resume.parsed_sections?.contact_info?.links?.length ? resume.parsed_sections.contact_info.links : contactLinks.split(',').map(l => l.trim()).filter(Boolean)) || []).map((link, idx) => (
                     <React.Fragment key={idx}>
                       <span>•</span>
                       <span>{link}</span>

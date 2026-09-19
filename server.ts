@@ -14,6 +14,7 @@ import {
   analyzeJobSourceText,
   buildHeuristicJobExtraction,
 } from './server/aiService';
+import { db } from './server/db';
 
 dotenv.config();
 
@@ -41,6 +42,151 @@ function getGenAI() {
 // Health Check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Authentication Routes (Email, GitHub, Google/Gmail)
+app.post('/api/auth/register', (req, res) => {
+  try {
+    const { email, name, password, auth_provider = 'email', avatar_url, github_username } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: 'A valid email is required for registration' });
+    }
+    const user = db.registerUser({
+      email,
+      name,
+      password,
+      auth_provider,
+      avatar_url,
+      github_username,
+    });
+    const profile = db.getUserProfile(user.id);
+    res.json({ user, profile });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Registration failed' });
+  }
+});
+
+app.post('/api/auth/login', (req, res) => {
+  try {
+    const { email, password, auth_provider = 'email' } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: 'Email address is required' });
+    }
+    const user = db.loginUser({ email, password, auth_provider });
+    const profile = db.getUserProfile(user.id);
+    res.json({ user, profile });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Login failed' });
+  }
+});
+
+app.get('/api/auth/me', (req, res) => {
+  const userId = (req.headers['x-user-id'] as string) || 'guest_user_default';
+  const user = db.getUser(userId) || db.getUser('guest_user_default');
+  const profile = db.getUserProfile(user?.id || 'guest_user_default');
+  res.json({ user, profile });
+});
+
+app.post('/api/auth/social-connect', (req, res) => {
+  try {
+    const { provider, email, name, avatar_url, github_username } = req.body;
+    const finalEmail = email || (github_username ? `${github_username}@users.noreply.github.com` : 'dev@example.com');
+    const user = db.registerUser({
+      email: finalEmail,
+      name: name || github_username || 'Developer',
+      auth_provider: provider || 'github',
+      avatar_url,
+      github_username,
+    });
+    const profile = db.getUserProfile(user.id);
+    res.json({ user, profile });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Social connection failed' });
+  }
+});
+
+// Personal Profile Filling & Management
+app.get('/api/user/profile', (req, res) => {
+  const userId = (req.headers['x-user-id'] as string) || 'guest_user_default';
+  const profile = db.getUserProfile(userId);
+  res.json({ profile });
+});
+
+app.post('/api/user/profile', (req, res) => {
+  try {
+    const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
+    const updated = db.saveUserProfile(userId, req.body);
+    res.json({ profile: updated });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to save profile' });
+  }
+});
+
+// Stored Experience Database Routes
+app.get('/api/user/experiences', (req, res) => {
+  const userId = (req.headers['x-user-id'] as string) || (req.query.user_id as string) || 'guest_user_default';
+  const experiences = db.getUserExperiences(userId);
+  res.json({ experiences });
+});
+
+app.post('/api/user/experiences', (req, res) => {
+  try {
+    const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
+    const newExp = db.addExperience(userId, req.body);
+    res.json({ experience: newExp });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to add experience' });
+  }
+});
+
+app.put('/api/user/experiences/:id', (req, res) => {
+  try {
+    const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
+    const expId = req.params.id;
+    const updated = db.updateExperience(userId, expId, req.body);
+    res.json({ experience: updated });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to update experience' });
+  }
+});
+
+app.delete('/api/user/experiences/:id', (req, res) => {
+  try {
+    const userId = (req.headers['x-user-id'] as string) || 'guest_user_default';
+    const expId = req.params.id;
+    const success = db.deleteExperience(userId, expId);
+    res.json({ success });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to delete experience' });
+  }
+});
+
+app.post('/api/user/experiences/sync-github', (req, res) => {
+  try {
+    const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
+    const { github_data } = req.body;
+    if (!github_data) {
+      return res.status(400).json({ error: 'github_data is required' });
+    }
+    const experiences = db.syncExperiencesFromGitHub(userId, github_data);
+    res.json({ experiences, count: experiences.length });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to sync GitHub experiences' });
+  }
+});
+
+app.post('/api/user/experiences/ai-update', async (req, res) => {
+  try {
+    const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
+    const { experience_id, user_prompt } = req.body;
+    if (!experience_id || !user_prompt) {
+      return res.status(400).json({ error: 'experience_id and user_prompt are required' });
+    }
+    const updated = await db.updateExperienceWithAI(userId, experience_id, user_prompt);
+    res.json({ experience: updated });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to update experience with AI' });
+  }
 });
 
 // Stage 1: GitHub Experience Parser
@@ -549,6 +695,8 @@ ${job_description}`;
 app.post('/api/generate-tailored-resume', async (req, res) => {
   try {
     const { master_profile, job_description, match_analysis, contact_info } = req.body;
+    const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
+    const storedExperiences = db.getUserExperiences(userId);
 
     if (!master_profile || !job_description || !match_analysis) {
       return res.status(400).json({ error: 'master_profile, job_description, and match_analysis are required' });
@@ -559,7 +707,7 @@ app.post('/api/generate-tailored-resume', async (req, res) => {
     const systemPrompt = `You are an elite executive resume writer specializing in ATS-compliant, high-conversion technical engineering resumes.
 
 Essential Guardrails & ATS Rules:
-1. Anti-Hallucination Rule (CRITICAL): Include ONLY factual data from the Master Profile. NEVER fabricate employers, metrics, or years. If a skill required by the JD is missing from the profile, DO NOT claim project execution; either omit it or reference it strictly under "Technical Familiarity / Continuous Learning" if related.
+1. Anti-Hallucination Rule (CRITICAL): Include ONLY factual data from the Master Profile and Stored User Experiences. NEVER fabricate employers, metrics, or years. If a skill required by the JD is missing from the profile, DO NOT claim project execution; either omit it or reference it strictly under "Technical Familiarity / Continuous Learning" if related.
 2. ATS Single-Column Layout: The resume must strictly follow a single-column, standard linear layout. NO multi-column tables, NO icons, NO graphic boxes, NO sidebar elements.
 3. Standard Section Headings:
    - PROFESSIONAL SUMMARY
@@ -571,6 +719,7 @@ Essential Guardrails & ATS Rules:
 5. Target Keyword Integration: Naturally integrate the matching keywords (${JSON.stringify(
       match_analysis.matching_keywords || []
     )}) and prioritize the selected projects (${JSON.stringify(match_analysis.selected_project_names || [])}).
+6. Candidate Contact Info: Always incorporate the candidate's exact phone, location, email, and community links in the contact header.
 
 Output Schema Requirements:
 Return ONLY valid JSON matching this schema:
@@ -582,6 +731,9 @@ Return ONLY valid JSON matching this schema:
       "name": "Candidate Full Name",
       "title": "Tailored Title matching JD (e.g. Senior Full-Stack & Platform Engineer)",
       "email": "candidate@example.com",
+      "phone": "+1 (555) 019-2831",
+      "location": "San Francisco, CA",
+      "avatar_url": "https://...",
       "links": ["github.com/...", "linkedin.com/in/..."]
     },
     "professional_summary": "Crisp 3-4 sentence summary tailored to the target role with highlighted keywords...",
@@ -644,11 +796,16 @@ Return ONLY valid JSON matching this schema:
 
     const userPrompt = `Generate an ATS-compliant tailored resume from this data:
 
-Candidate Contact Info:
+Candidate Contact & Personal Info:
 Name: ${contact_info?.name || master_profile.candidate_name}
 Email: ${contact_info?.email || 'dev@example.com'}
-Phone/Location: ${contact_info?.location || 'San Francisco, CA'}
-GitHub/Links: ${contact_info?.links ? contact_info.links.join(', ') : 'github.com/' + (master_profile.candidate_name || 'dev')}
+Phone: ${contact_info?.phone || ''}
+Location: ${contact_info?.location || ''}
+Avatar URL: ${contact_info?.avatar_url || ''}
+Community Links & Profiles: ${contact_info?.links ? contact_info.links.join(', ') : 'github.com/' + (master_profile.candidate_name || 'dev')}
+
+Database Stored Experiences (incorporate these customized experiences):
+${JSON.stringify(storedExperiences, null, 2)}
 
 Master Profile:
 ${JSON.stringify(master_profile, null, 2)}
@@ -673,6 +830,17 @@ ${JSON.stringify(match_analysis, null, 2)}`;
       parsedResume = buildHeuristicATSResume(master_profile, job_description, match_analysis, contact_info);
       engineUsed = 'heuristic_resilience_engine';
       fallbackMode = true;
+    }
+
+    if (parsedResume?.parsed_sections?.contact_info) {
+      if (contact_info?.name) parsedResume.parsed_sections.contact_info.name = contact_info.name;
+      if (contact_info?.email) parsedResume.parsed_sections.contact_info.email = contact_info.email;
+      if (contact_info?.phone) parsedResume.parsed_sections.contact_info.phone = contact_info.phone;
+      if (contact_info?.location) parsedResume.parsed_sections.contact_info.location = contact_info.location;
+      if (contact_info?.avatar_url) parsedResume.parsed_sections.contact_info.avatar_url = contact_info.avatar_url;
+      if (contact_info?.links && contact_info.links.length > 0) {
+        parsedResume.parsed_sections.contact_info.links = contact_info.links;
+      }
     }
 
     res.json({

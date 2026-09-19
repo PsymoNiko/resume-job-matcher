@@ -17,22 +17,30 @@ import {
   ExternalLink,
   ChevronRight
 } from 'lucide-react';
-import { MasterProfile, MasterProfileProject, SuggestedBulletPoint } from '../types';
+import { MasterProfile, MasterProfileProject, SuggestedBulletPoint, UserProfileInfo } from '../types';
 
 interface MasterProfileViewProps {
   masterProfile: MasterProfile | null;
+  userProfile?: UserProfileInfo | null;
+  experiencesCount?: number;
   isLoading: boolean;
   errorMessage?: string;
   onTriggerSynthesis: () => Promise<void>;
   onProceedToJobMatch: () => void;
+  onOpenExperienceDatabase?: () => void;
+  onOpenProfileFilling?: () => void;
 }
 
 export const MasterProfileView: React.FC<MasterProfileViewProps> = ({
   masterProfile,
+  userProfile,
+  experiencesCount = 0,
   isLoading,
   errorMessage,
   onTriggerSynthesis,
   onProceedToJobMatch,
+  onOpenExperienceDatabase,
+  onOpenProfileFilling,
 }) => {
   const [copiedBulletIdx, setCopiedBulletIdx] = useState<number | null>(null);
 
@@ -94,7 +102,28 @@ export const MasterProfileView: React.FC<MasterProfileViewProps> = ({
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {onOpenExperienceDatabase && (
+              <button
+                type="button"
+                id="btn-stage2-experiences-db"
+                onClick={onOpenExperienceDatabase}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 text-xs font-medium transition-colors"
+              >
+                <Database className="w-3.5 h-3.5" />
+                <span>Experiences DB ({experiencesCount})</span>
+              </button>
+            )}
+            {onOpenProfileFilling && (
+              <button
+                type="button"
+                id="btn-stage2-profile-filling"
+                onClick={onOpenProfileFilling}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-stone-800 bg-stone-950 hover:bg-stone-800 text-stone-300 text-xs font-medium transition-colors"
+              >
+                <span>Edit Personal Info</span>
+              </button>
+            )}
             <button
               id="btn-resynthesize"
               onClick={onTriggerSynthesis}

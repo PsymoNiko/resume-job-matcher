@@ -106,6 +106,9 @@ export interface ATSResume {
       name: string;
       title: string;
       email: string;
+      phone?: string;
+      location?: string;
+      avatar_url?: string;
       links: string[];
     };
     professional_summary: string;
@@ -165,5 +168,53 @@ export interface StageStatus {
   started_at?: number;
   completed_at?: number;
   error_message?: string;
+}
+
+export type AuthProviderType = 'email' | 'github' | 'google';
+
+export interface UserAccount {
+  id: string;
+  email: string;
+  name: string;
+  auth_provider: AuthProviderType;
+  avatar_url?: string;
+  github_username?: string;
+  created_at: number;
+}
+
+export interface UserProfileInfo {
+  id?: string;
+  user_id?: string;
+  name: string;
+  email: string;
+  phone: string;
+  location: string;
+  avatar_url?: string;
+  title: string;
+  bio?: string;
+  github_username?: string;
+  linkedin_url?: string;
+  portfolio_url?: string;
+  community_links: string[]; // e.g., ["discord.gg/devs", "twitter.com/alexchen", "stackoverflow.com/users/1234"]
+  updated_at?: number;
+}
+
+export interface UserExperienceItem {
+  id: string;
+  user_id?: string;
+  title: string;
+  company_or_org: string;
+  role_type: 'work' | 'opensource' | 'project' | 'contribution';
+  start_date: string;
+  end_date: string;
+  is_current: boolean;
+  location?: string;
+  tech_stack: string[];
+  bullets: string[];
+  quantified_impact?: string[];
+  repo_url?: string;
+  stars?: number;
+  source: 'github_activity' | 'user_created' | 'ai_enhanced';
+  updated_at?: number;
 }
 

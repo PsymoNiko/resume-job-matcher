@@ -40,9 +40,11 @@ export function generateATSPDF(resume: ATSResume, filename = 'tailored_ats_resum
     y += 5;
   }
 
-  // Contact links / email / location (9.5pt)
+  // Contact links / email / phone / location (9.5pt)
   const contactItems = [
     contact.email,
+    contact.phone,
+    contact.location,
     ...(contact.links || [])
   ].filter(Boolean);
 
