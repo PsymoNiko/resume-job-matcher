@@ -423,7 +423,7 @@ ${JSON.stringify(
 )}`;
 
     let parsedProfile;
-    let engineUsed = 'gemini-3.6-flash';
+    let engineUsed = 'gemini-3.8-flash';
     let fallbackMode = false;
 
     try {
@@ -529,7 +529,7 @@ app.post('/api/fetch-job-from-url', async (req, res) => {
     res.json({
       ...analysis,
       meta: {
-        engine: 'gemini-3.6-flash',
+        engine: 'gemini-3.8-flash',
         source_url: trimmedUrl,
         extracted_chars: cleanText.length,
       },
@@ -579,7 +579,7 @@ app.post('/api/parse-job-document', async (req, res) => {
     res.json({
       ...analysis,
       meta: {
-        engine: 'gemini-3.6-flash',
+        engine: 'gemini-3.8-flash',
         file_name: file_name || 'document',
         extracted_chars: extractedText.length,
       },
@@ -662,7 +662,7 @@ Target Job Description:
 ${job_description}`;
 
     let parsedMatch;
-    let engineUsed = 'gemini-3.6-flash';
+    let engineUsed = 'gemini-3.8-flash';
     let fallbackMode = false;
 
     try {
@@ -817,7 +817,7 @@ Match Analysis & Selected Projects:
 ${JSON.stringify(match_analysis, null, 2)}`;
 
     let parsedResume;
-    let engineUsed = 'gemini-3.6-flash';
+    let engineUsed = 'gemini-3.8-flash';
     let fallbackMode = false;
 
     try {

@@ -7,7 +7,7 @@ import {
 } from '../src/types';
 
 // Supported, valid models according to @google/genai specifications
-const PRIMARY_MODEL = 'gemini-3.6-flash';
+const PRIMARY_MODEL = 'gemini-3.8-flash';
 const SECONDARY_MODEL = 'gemini-3.1-flash-lite';
 const TERTIARY_MODEL = 'gemini-flash-latest';
 
