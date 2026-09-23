@@ -42,15 +42,21 @@ const PORT = 3000;
 
 app.use(express.json({ limit: '15mb' }));
 
+function isAdminRequest(req: express.Request): boolean {
+  const userId = req.headers['x-user-id'] as string | undefined;
+  return isAdminSecretValid(req.headers['x-admin-secret'] as string)
+    || Boolean(userId && isUserAdmin(db.getUser(userId) || userId));
+}
+
 app.get('/api/admin/config', (req, res) => {
-  if (!isAdminSecretValid(req.headers['x-admin-secret'] as string)) {
+  if (!isAdminRequest(req)) {
     return res.status(401).json({ error: 'Administrator authentication required.' });
   }
   res.json({ config: getAdminConfig() });
 });
 
 app.post('/api/admin/config', (req, res) => {
-  if (!isAdminSecretValid(req.headers['x-admin-secret'] as string)) {
+  if (!isAdminRequest(req)) {
     return res.status(401).json({ error: 'Administrator authentication required.' });
   }
   res.json({ config: updateAdminConfig(req.body || {}) });

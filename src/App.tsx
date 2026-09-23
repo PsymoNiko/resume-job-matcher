@@ -34,6 +34,8 @@ import {
   Info, 
   ShieldCheck, 
   Cpu, 
+  Database,
+  Settings2,
   Layers, 
   Sparkles,
   ExternalLink,
@@ -913,6 +915,8 @@ export default function App() {
     addLog(1, 'Pipeline reset to initial default state.', 'info');
   };
 
+  const isAdmin = Boolean(quota?.isAdmin || currentUser?.role === 'admin');
+
   return (
     <div className="min-h-screen bg-stone-950 text-stone-100 flex flex-col font-sans">
       {/* 4-Stage Architectural Pipeline Flow Header */}
@@ -930,8 +934,8 @@ export default function App() {
         dwappState={dwappState}
         quota={quota}
         onOpenBillingModal={() => setBillingModalOpen(true)}
-        onOpenAiModal={() => setAiModalOpen(true)}
-        onOpenDbModal={() => setDbModalOpen(true)}
+        onOpenAiModal={isAdmin ? () => setAiModalOpen(true) : undefined}
+        onOpenDbModal={isAdmin ? () => setDbModalOpen(true) : undefined}
         onOpenAuthModal={() => setAuthModalOpen(true)}
         onOpenProfileModal={() => setProfileModalOpen(true)}
         onOpenExperienceModal={() => setExperienceModalOpen(true)}
@@ -940,6 +944,52 @@ export default function App() {
 
       {/* Main Stage View Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {/* Separate administrative workspace from candidate-facing workflow. */}
+        {isAdmin && (
+          <section className="no-print mb-6 rounded-2xl border border-amber-500/30 bg-gradient-to-br from-amber-950/40 via-stone-900 to-stone-950 p-5 shadow-lg">
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+              <div className="flex items-start gap-3">
+                <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 p-2.5 text-amber-300">
+                  <ShieldCheck className="h-5 w-5" />
+                </div>
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="text-sm font-semibold text-amber-100">Administrator Workspace</h2>
+                    <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-mono text-emerald-300">
+                      UNLIMITED ACCESS
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-stone-400">
+                    Platform operations are separated from the candidate workflow. Review persistence and AI provider configuration here.
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDbModalOpen(true)}
+                  className="inline-flex items-center gap-2 rounded-lg border border-stone-700 bg-stone-950/80 px-3 py-2 text-xs font-medium text-stone-200 transition hover:border-amber-400/50 hover:text-amber-200"
+                >
+                  <Database className="h-3.5 w-3.5 text-amber-300" />
+                  Database
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAiModalOpen(true)}
+                  className="inline-flex items-center gap-2 rounded-lg border border-stone-700 bg-stone-950/80 px-3 py-2 text-xs font-medium text-stone-200 transition hover:border-amber-400/50 hover:text-amber-200"
+                >
+                  <Settings2 className="h-3.5 w-3.5 text-amber-300" />
+                  AI Configuration
+                </button>
+              </div>
+            </div>
+          </section>
+        )}
+
+        <div className="mb-4 flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] text-stone-500">
+          <Layers className="h-3.5 w-3.5 text-amber-400" />
+          <span>User Workspace · Resume and Job Matching</span>
+        </div>
         <ResumeAnalyzer aiConfig={aiConfig} />
         {currentStage === 1 && (
           <ExperienceParserView
@@ -1015,19 +1065,23 @@ export default function App() {
               </span>
             </div>
             <div className="flex items-center gap-3 text-[11px] text-stone-400">
-              <button
-                onClick={() => setAiModalOpen(true)}
-                className="hover:text-amber-400 underline underline-offset-2 flex items-center gap-1"
-              >
-                <span>Switch AI Model</span>
-              </button>
-              <span>•</span>
-              <button
-                onClick={() => setDbModalOpen(true)}
-                className="hover:text-amber-400 underline underline-offset-2 flex items-center gap-1"
-              >
-                <span>DB Settings</span>
-              </button>
+              {isAdmin && (
+                <>
+                  <button
+                    onClick={() => setAiModalOpen(true)}
+                    className="hover:text-amber-400 underline underline-offset-2 flex items-center gap-1"
+                  >
+                    <span>AI Configuration</span>
+                  </button>
+                  <span>•</span>
+                  <button
+                    onClick={() => setDbModalOpen(true)}
+                    className="hover:text-amber-400 underline underline-offset-2 flex items-center gap-1"
+                  >
+                    <span>Database Settings</span>
+                  </button>
+                </>
+              )}
               <span>•</span>
               <button
                 onClick={() => setArchitectureModalOpen(true)}
@@ -1071,20 +1125,24 @@ export default function App() {
             <span>Autonomous Career Synthesis & ATS Compilation</span>
           </div>
           <div className="flex items-center gap-4">
-            <button
-              onClick={() => setDbModalOpen(true)}
-              className="text-stone-400 hover:text-stone-200 transition-colors"
-            >
-              PostgreSQL / DB Env
-            </button>
-            <span>•</span>
-            <button
-              onClick={() => setAiModalOpen(true)}
-              className="text-stone-400 hover:text-stone-200 transition-colors"
-            >
-              AI Model Config
-            </button>
-            <span>•</span>
+            {isAdmin && (
+              <>
+                <button
+                  onClick={() => setDbModalOpen(true)}
+                  className="text-stone-400 hover:text-stone-200 transition-colors"
+                >
+                  PostgreSQL / DB Env
+                </button>
+                <span>•</span>
+                <button
+                  onClick={() => setAiModalOpen(true)}
+                  className="text-stone-400 hover:text-stone-200 transition-colors"
+                >
+                  AI Model Config
+                </button>
+                <span>•</span>
+              </>
+            )}
             <button
               onClick={() => setArchitectureModalOpen(true)}
               className="text-stone-400 hover:text-stone-200 transition-colors"
@@ -1139,6 +1197,8 @@ export default function App() {
         isOpen={aiModalOpen}
         onClose={() => setAiModalOpen(false)}
         currentConfig={aiConfig}
+        isAdmin={isAdmin}
+        adminUserId={currentUser?.id || localStorage.getItem('resume_job_matcher_auth_token') || undefined}
         onSaveConfig={(newConfig) => {
           setAiConfig(newConfig);
           try {

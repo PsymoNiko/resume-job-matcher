@@ -12,7 +12,8 @@ import {
   Key, 
   Globe, 
   Server,
-  Bot
+  Bot,
+  ShieldCheck
 } from 'lucide-react';
 import { AIProvider, AIConfigSettings, AIModelOption } from '../types';
 
@@ -21,6 +22,8 @@ interface AIModelSettingsModalProps {
   onClose: () => void;
   currentConfig: AIConfigSettings;
   onSaveConfig: (config: AIConfigSettings) => void;
+  isAdmin?: boolean;
+  adminUserId?: string;
 }
 
 export const AIModelSettingsModal: React.FC<AIModelSettingsModalProps> = ({
@@ -28,6 +31,8 @@ export const AIModelSettingsModal: React.FC<AIModelSettingsModalProps> = ({
   onClose,
   currentConfig,
   onSaveConfig,
+  isAdmin = false,
+  adminUserId,
 }) => {
   const [provider, setProvider] = useState<AIProvider>(currentConfig.provider || 'deepseek');
   const [model, setModel] = useState<string>(currentConfig.model || 'deepseek-chat');
@@ -47,6 +52,8 @@ export const AIModelSettingsModal: React.FC<AIModelSettingsModalProps> = ({
   // Available models from server
   const [availableModels, setAvailableModels] = useState<AIModelOption[]>([]);
   const [providersStatus, setProvidersStatus] = useState<Record<string, boolean>>({});
+  const [enabledProviders, setEnabledProviders] = useState<string[]>([]);
+  const [providerSaveError, setProviderSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -71,6 +78,11 @@ export const AIModelSettingsModal: React.FC<AIModelSettingsModalProps> = ({
               if (item.id) detected[item.id] = Boolean(item.isConfigured);
             }
             setProvidersStatus(detected);
+            setEnabledProviders(
+              data.providers
+                .filter((item: { id?: string; enabled?: boolean }) => item.id && item.enabled)
+                .map((item: { id: string }) => item.id)
+            );
 
             // Prefer the server's configured endpoint over the modal's local default.
             if (
@@ -157,6 +169,38 @@ export const AIModelSettingsModal: React.FC<AIModelSettingsModalProps> = ({
     onClose();
   };
 
+  const toggleProvider = (providerId: string) => {
+    setProviderSaveError(null);
+    setEnabledProviders((current) => (
+      current.includes(providerId)
+        ? current.filter((id) => id !== providerId)
+        : [...current, providerId]
+    ));
+  };
+
+  const saveProviderAccess = async () => {
+    if (!isAdmin || !adminUserId || enabledProviders.length === 0) {
+      setProviderSaveError('Keep at least one AI provider enabled.');
+      return;
+    }
+    setProviderSaveError(null);
+    try {
+      const response = await fetch('/api/admin/config', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-id': adminUserId,
+        },
+        body: JSON.stringify({ AI_ENABLED_PROVIDERS: enabledProviders.join(',') }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to save provider access.');
+      window.location.reload();
+    } catch (error: any) {
+      setProviderSaveError(error.message || 'Failed to save provider access.');
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm overflow-y-auto">
       <div 
@@ -235,6 +279,46 @@ export const AIModelSettingsModal: React.FC<AIModelSettingsModalProps> = ({
             })}
           </div>
         </div>
+
+        {isAdmin && (
+          <div className="space-y-3 rounded-xl border border-amber-500/25 bg-amber-500/5 p-3.5">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-xs font-semibold text-amber-100">Provider Access Control</div>
+                <p className="text-[10px] text-stone-400">Enable or disable providers for the entire application.</p>
+              </div>
+              <ShieldCheck className="h-4 w-4 text-amber-300" />
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {providerList.map((item) => {
+                const enabled = enabledProviders.includes(item.id);
+                return (
+                  <button
+                    key={`access-${item.id}`}
+                    type="button"
+                    onClick={() => toggleProvider(item.id)}
+                    className={`flex items-center justify-between rounded-lg border px-2.5 py-2 text-left text-[11px] transition ${
+                      enabled
+                        ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                        : 'border-stone-800 bg-stone-950/60 text-stone-500'
+                    }`}
+                  >
+                    <span>{item.name}</span>
+                    <span className={`h-2 w-2 rounded-full ${enabled ? 'bg-emerald-400' : 'bg-stone-600'}`} />
+                  </button>
+                );
+              })}
+            </div>
+            {providerSaveError && <p className="text-[11px] text-rose-300">{providerSaveError}</p>}
+            <button
+              type="button"
+              onClick={saveProviderAccess}
+              className="rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-1.5 text-[11px] font-medium text-amber-200 hover:bg-amber-400/20"
+            >
+              Save provider access
+            </button>
+          </div>
+        )}
 
         {/* Model Selection & Custom Config */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
