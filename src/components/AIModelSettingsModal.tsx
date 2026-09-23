@@ -61,8 +61,23 @@ export const AIModelSettingsModal: React.FC<AIModelSettingsModalProps> = ({
       fetch('/api/ai/providers')
         .then((r) => r.json())
         .then((data) => {
-          if (data.models) setAvailableModels(data.models);
-          if (data.server_detected_keys) setProvidersStatus(data.server_detected_keys);
+          if (data.presetModels) setAvailableModels(data.presetModels);
+          if (Array.isArray(data.providers)) {
+            const detected: Record<string, boolean> = {};
+            const selfHosted = data.providers.find((item: { id?: string }) => item.id === 'self_hosted');
+            for (const item of data.providers) {
+              if (item.id) detected[item.id] = Boolean(item.isConfigured);
+            }
+            setProvidersStatus(detected);
+
+            // Prefer the server's configured endpoint over the modal's local default.
+            if (
+              selfHosted?.defaultBaseUrl &&
+              (!currentConfig.customBaseUrl || currentConfig.customBaseUrl === 'http://localhost:11434/v1')
+            ) {
+              setCustomBaseUrl(selfHosted.defaultBaseUrl);
+            }
+          }
         })
         .catch(() => {});
     }

@@ -128,6 +128,39 @@ export interface ATSResume {
   };
 }
 
+export interface ResumeAnalysis {
+  overall_score: number;
+  summary: string;
+  line_edits: ResumeLineEdit[];
+  strengths: string[];
+  improvements: {
+    area: string;
+    priority: 'high' | 'medium' | 'low';
+    recommendation: string;
+    example?: string;
+  }[];
+  missing_keywords: string[];
+  ats_findings: string[];
+  improved_summary?: string;
+}
+
+export interface ResumeLineEdit {
+  line_number: number;
+  current_line: string;
+  suggested_line: string;
+  reason: string;
+}
+
+export interface ResumeChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface ResumeRegenerationResult {
+  markdown: string;
+  plain_text: string;
+}
+
 export interface ExtractedJobOpportunity {
   source_type: 'url' | 'document' | 'preset' | 'manual';
   source_url?: string;
@@ -216,6 +249,7 @@ export interface UserExperienceItem {
   location?: string;
   tech_stack: string[];
   bullets: string[];
+  repository_feature?: string;
   quantified_impact?: string[];
   repo_url?: string;
   stars?: number;
@@ -341,5 +375,3 @@ export interface UserQuotaState {
     txHash?: string;
   }[];
 }
-
-

@@ -13,6 +13,9 @@ import {
   stripHtml,
   extractTextFromPdfBuffer,
   analyzeJobSourceText,
+  analyzeResumeText,
+  chatAboutResume,
+  regenerateResumeText,
   buildHeuristicJobExtraction,
   testAIConnection,
   getAvailableAIProviders,
@@ -300,9 +303,23 @@ app.post('/api/user/experiences', (req, res) => {
   try {
     const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
     const newExp = db.addExperience(userId, req.body);
-    res.json({ experience: newExp });
+    res.json({ experience: newExp, experiences: db.getUserExperiences(userId) });
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Failed to add experience' });
+  }
+});
+
+app.post('/api/user/experiences/bulk', (req, res) => {
+  try {
+    const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
+    const items = Array.isArray(req.body?.items) ? req.body.items : Array.isArray(req.body) ? req.body : [];
+    if (!items.length) {
+      return res.status(400).json({ error: 'items array is required' });
+    }
+    const experiences = db.bulkAddExperiences(userId, items);
+    res.json({ experiences, count: experiences.length });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to add experiences in bulk' });
   }
 });
 
@@ -342,19 +359,26 @@ app.post('/api/user/experiences/sync-github', (req, res) => {
   }
 });
 
-app.post('/api/user/experiences/ai-update', async (req, res) => {
+async function handleAIExperienceUpdate(req: express.Request, res: express.Response) {
   try {
     const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
-    const { experience_id, user_prompt, ai_config } = req.body;
-    if (!experience_id || !user_prompt) {
+    const experienceId = req.params.id || req.body.experience_id;
+    const userPrompt = req.body.user_prompt || req.body.userPrompt;
+    const { ai_config, repository_feature } = req.body;
+    if (!experienceId || !userPrompt) {
       return res.status(400).json({ error: 'experience_id and user_prompt are required' });
     }
-    const updated = await db.updateExperienceWithAI(userId, experience_id, user_prompt, ai_config);
+    const updated = await db.updateExperienceWithAI(userId, experienceId, userPrompt, ai_config, repository_feature);
     res.json({ experience: updated });
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Failed to update experience with AI' });
   }
-});
+}
+
+// Keep both API shapes supported: the current frontend uses the resource URL,
+// while older clients send the experience ID in the request body.
+app.post('/api/user/experiences/:id/ai-enhance', handleAIExperienceUpdate);
+app.post('/api/user/experiences/ai-update', handleAIExperienceUpdate);
 
 // Stage 1: GitHub Experience Parser
 app.post('/api/extract-github', async (req, res) => {
@@ -775,6 +799,73 @@ app.post('/api/parse-job-document', async (req, res) => {
   } catch (err: any) {
     const errorDesc = err?.message?.slice(0, 100) || 'Unknown error occurred';
     console.log(`[API Notice] /api/parse-job-document completed with notice: ${errorDesc}`);
+    res.status(500).json({ error: errorDesc });
+  }
+});
+
+app.post('/api/analyze-resume', async (req, res) => {
+  try {
+    const { file_name, file_type, file_base64, file_text, ai_config } = req.body;
+    if (!file_name || (!file_base64 && !file_text)) {
+      return res.status(400).json({ error: 'A resume file is required.' });
+    }
+    if (!/\.(pdf|txt|md)$/i.test(file_name) && !['application/pdf', 'text/plain', 'text/markdown'].includes(file_type)) {
+      return res.status(400).json({ error: 'Only PDF, TXT, and Markdown resumes are supported.' });
+    }
+
+    let extractedText = file_text || '';
+    if (!extractedText && file_base64) {
+      const buffer = Buffer.from(file_base64, 'base64');
+      if (buffer.length > 10 * 1024 * 1024) {
+        return res.status(413).json({ error: 'Resume files must be smaller than 10 MB.' });
+      }
+      extractedText = file_type === 'application/pdf' || /\.pdf$/i.test(file_name)
+        ? await extractTextFromPdfBuffer(buffer)
+        : buffer.toString('utf-8');
+    }
+    if (!extractedText.trim()) {
+      return res.status(400).json({ error: 'Could not extract readable text from the uploaded resume.' });
+    }
+
+    const analysis = await analyzeResumeText(extractedText, file_name, ai_config);
+    res.json({ analysis, source_text: extractedText, meta: { file_name, extracted_chars: extractedText.length } });
+  } catch (err: any) {
+    const errorDesc = err?.message?.slice(0, 150) || 'Resume analysis failed.';
+    console.log(`[API Notice] /api/analyze-resume completed with notice: ${errorDesc}`);
+    res.status(500).json({ error: errorDesc });
+  }
+});
+
+app.post('/api/chat-about-resume', async (req, res) => {
+  try {
+    const { resume_text, messages, ai_config } = req.body;
+    if (!resume_text || !Array.isArray(messages) || !messages.length) {
+      return res.status(400).json({ error: 'resume_text and messages are required.' });
+    }
+    const lastMessage = messages[messages.length - 1];
+    if (lastMessage?.role !== 'user' || typeof lastMessage.content !== 'string' || !lastMessage.content.trim()) {
+      return res.status(400).json({ error: 'The latest chat message must be a non-empty user message.' });
+    }
+    const reply = await chatAboutResume(resume_text, messages, ai_config);
+    res.json({ reply });
+  } catch (err: any) {
+    const errorDesc = err?.message?.slice(0, 150) || 'Resume chat failed.';
+    console.log(`[API Notice] /api/chat-about-resume completed with notice: ${errorDesc}`);
+    res.status(500).json({ error: errorDesc });
+  }
+});
+
+app.post('/api/regenerate-resume', async (req, res) => {
+  try {
+    const { selected_resume_text, ai_config } = req.body;
+    if (!selected_resume_text || typeof selected_resume_text !== 'string') {
+      return res.status(400).json({ error: 'selected_resume_text is required.' });
+    }
+    const regenerated_resume = await regenerateResumeText(selected_resume_text, ai_config);
+    res.json({ regenerated_resume });
+  } catch (err: any) {
+    const errorDesc = err?.message?.slice(0, 150) || 'Resume regeneration failed.';
+    console.log(`[API Notice] /api/regenerate-resume completed with notice: ${errorDesc}`);
     res.status(500).json({ error: errorDesc });
   }
 });

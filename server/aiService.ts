@@ -1,4 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
+import http from 'http';
+import https from 'https';
 import { 
   GitHubProfileData, 
   MasterProfile, 
@@ -8,6 +10,7 @@ import {
   AIConfigSettings,
   AIModelOption
 } from '../src/types';
+import { ResumeAnalysis } from '../src/types';
 
 // Supported default models
 export const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
@@ -35,6 +38,45 @@ export interface AIExecutionOptions {
   customApiKey?: string;
   temperature?: number;
   timeoutMs?: number;
+}
+
+async function postOpenAICompatible(
+  endpoint: string,
+  headers: Record<string, string>,
+  body: string,
+  timeoutMs: number,
+  allowInsecureTls: boolean
+): Promise<{ ok: boolean; status: number; text: string }> {
+  const parsedUrl = new URL(endpoint);
+  const transport = parsedUrl.protocol === 'https:' ? https : http;
+
+  return new Promise((resolve, reject) => {
+    const request = transport.request(
+      parsedUrl,
+      {
+        method: 'POST',
+        headers,
+        timeout: timeoutMs,
+        ...(parsedUrl.protocol === 'https:' && allowInsecureTls ? { rejectUnauthorized: false } : {}),
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+        response.on('end', () => {
+          resolve({
+            ok: (response.statusCode || 500) >= 200 && (response.statusCode || 500) < 300,
+            status: response.statusCode || 500,
+            text: Buffer.concat(chunks).toString('utf8'),
+          });
+        });
+      }
+    );
+
+    request.on('timeout', () => request.destroy(new Error(`Request timed out after ${timeoutMs}ms`)));
+    request.on('error', reject);
+    request.write(body);
+    request.end();
+  });
 }
 
 // Catalog of preset model choices across providers
@@ -429,9 +471,14 @@ async function callCustomOpenAI(
   let baseUrl = (options.baseUrl || process.env.CUSTOM_LLM_BASE_URL || 'http://localhost:11434/v1').trim();
   baseUrl = baseUrl.replace(/\/+$/, '');
   const endpoint = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
+  const candidateEndpoints = [endpoint];
+  if (!baseUrl.endsWith('/v1') && !baseUrl.endsWith('/v1/chat/completions')) {
+    candidateEndpoints.push(`${baseUrl}/v1/chat/completions`);
+  }
 
   const apiKey = options.apiKey || process.env.CUSTOM_LLM_API_KEY || 'not-needed';
   const model = options.model || process.env.CUSTOM_LLM_MODEL || 'gemma2:9b';
+  const allowInsecureTls = process.env.CUSTOM_LLM_ALLOW_INSECURE_TLS === 'true';
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 40000);
@@ -444,29 +491,39 @@ async function callCustomOpenAI(
       headers.Authorization = `Bearer ${apiKey}`;
     }
 
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: `${systemPrompt}\n\nRespond ONLY with valid JSON.` },
-          { role: 'user', content: userPrompt },
-        ],
-        temperature: options.temperature ?? 0.2,
-        stream: false,
-      }),
-      signal: controller.signal,
-    });
+    let res: { ok: boolean; status: number; text: string } | undefined;
+    let lastErrorBody = '';
+    for (const candidateEndpoint of candidateEndpoints) {
+      res = await postOpenAICompatible(
+        candidateEndpoint,
+        headers,
+        JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: `${systemPrompt}\n\nRespond ONLY with valid JSON.` },
+            { role: 'user', content: userPrompt },
+          ],
+          temperature: options.temperature ?? 0.2,
+          stream: false,
+        }),
+        options.timeoutMs || 40000,
+        allowInsecureTls
+      );
 
-    if (!res.ok) {
-      const errBody = await res.text();
+      if (res.ok || res.status !== 404 || candidateEndpoint === candidateEndpoints[candidateEndpoints.length - 1]) {
+        break;
+      }
+      lastErrorBody = res.text;
+    }
+
+    if (!res || !res.ok) {
+      const errBody = res ? res.text : lastErrorBody;
       throw new Error(
-        `${options.providerName || 'Self-Hosted LLM'} endpoint error (${res.status} at ${baseUrl}): ${errBody.slice(0, 200)}`
+        `${options.providerName || 'Self-Hosted LLM'} endpoint error (${res?.status || 'network'} at ${baseUrl}): ${errBody.slice(0, 200)}`
       );
     }
 
-    const data = await res.json();
+    const data = JSON.parse(res.text);
     const content = data.choices?.[0]?.message?.content;
     if (!content) throw new Error(`No content returned from ${options.providerName || 'custom endpoint'}`);
     return content;
@@ -608,7 +665,10 @@ export async function executeUnifiedAI(
         fallbackTriggered: false,
       };
     } catch (customErr: any) {
-      console.warn(`[Unified AI Router] Custom/Self-Hosted (${model}) notice: ${customErr.message}. Gracefully engaging Gemini resilience chain...`);
+      if (provider === 'self_hosted') {
+        throw new Error(`Self-hosted AI connection failed: ${customErr.message}`);
+      }
+      console.warn(`[Unified AI Router] Custom endpoint (${model}) notice: ${customErr.message}. Gracefully engaging Gemini resilience chain...`);
       const fallback = await executeGeminiWithRetry(systemPrompt, userPrompt, temp);
       return {
         text: fallback.text,
@@ -1280,6 +1340,122 @@ Headline: ${candidateProfile?.headline || ''}`;
   }
 }
 
+export async function analyzeResumeText(
+  sourceText: string,
+  fileName: string,
+  ai_config?: AIConfigSettings
+): Promise<ResumeAnalysis> {
+  const systemPrompt = `You are an expert resume coach and ATS optimization specialist.
+Review the resume text and return ONLY valid JSON matching this shape:
+{
+  "overall_score": number from 0 to 100,
+  "summary": "brief overall assessment",
+  "line_edits": [{"line_number": 1, "current_line": "exact line from the resume", "suggested_line": "truthful improved version", "reason": "why this change helps"}],
+  "strengths": ["specific strengths"],
+  "improvements": [{"area":"section or issue","priority":"high|medium|low","recommendation":"specific action","example":"optional rewrite example"}],
+  "missing_keywords": ["keywords or skills that appear absent or under-described"],
+  "ats_findings": ["specific ATS formatting or content findings"],
+  "improved_summary": "optional rewritten professional summary"
+}
+Be truthful: do not invent experience, employers, metrics, or skills. Prefer 3-6 specific items per list and actionable recommendations.
+For line_edits, select up to 12 lines that would materially benefit from rewriting. current_line must match the source exactly. Do not create edits for headings or lines that are already strong.`;
+  const userPrompt = `Resume filename: ${fileName}
+
+Resume text:
+${sourceText.slice(0, 30000)}`;
+
+  try {
+    const { text } = await executeUnifiedAI(systemPrompt, userPrompt, {
+      provider: ai_config?.provider,
+      model: ai_config?.model,
+      customBaseUrl: ai_config?.customBaseUrl,
+      customApiKey: ai_config?.customApiKey,
+      temperature: ai_config?.temperature,
+    });
+    return cleanJsonResponse(text) as ResumeAnalysis;
+  } catch (err: any) {
+    console.warn(`[Resume Analysis] AI unavailable, using structured fallback: ${err?.message || err}`);
+    const wordCount = sourceText.trim().split(/\s+/).filter(Boolean).length;
+    const hasContact = /@|linkedin|github|phone/i.test(sourceText);
+    const fallbackLines = sourceText.split(/\r?\n/);
+    const line_edits = fallbackLines
+      .map((line, index) => ({ line, lineNumber: index + 1 }))
+      .filter(({ line }) => line.length > 45 && /^[•*-]?\s*(worked|helped|responsible|worked on|did|made|used)\b/i.test(line))
+      .slice(0, 6)
+      .map(({ line, lineNumber }) => ({
+        line_number: lineNumber,
+        current_line: line,
+        suggested_line: line.replace(/^[•*-]?\s*/g, '• ').replace(/^(•\s*)?(worked|helped|was responsible for|worked on|did|made|used)\b/i, '• Delivered'),
+        reason: 'Lead with a stronger action verb and make the contribution easier for a recruiter to scan.',
+      }));
+    return {
+      overall_score: Math.max(35, Math.min(75, 45 + (hasContact ? 15 : 0) + (wordCount > 250 ? 10 : 0))),
+      summary: 'A basic review was generated because the configured AI provider was unavailable.',
+      line_edits,
+      strengths: [hasContact ? 'Contact information or professional links were detected.' : 'The document was readable and could be extracted successfully.', wordCount > 250 ? 'The resume contains enough content for a detailed review.' : 'The resume is concise.'],
+      improvements: [
+        { area: 'Quantified impact', priority: 'high', recommendation: 'Add measurable outcomes to experience bullets, such as latency, revenue, adoption, or delivery improvements.' },
+        { area: 'Targeting', priority: 'medium', recommendation: 'Tailor the skills and bullet wording to the job description you are applying for.' },
+      ],
+      missing_keywords: [],
+      ats_findings: [hasContact ? 'Contact information was detected.' : 'Add email, phone, and professional profile links near the header.', wordCount < 250 ? 'The resume may be too short to demonstrate sufficient experience.' : 'Review formatting for standard section headings and a single-column layout.'],
+      improved_summary: '',
+    };
+  }
+}
+
+export async function chatAboutResume(
+  resumeText: string,
+  messages: { role: 'user' | 'assistant'; content: string }[],
+  ai_config?: AIConfigSettings
+): Promise<string> {
+  const systemPrompt = `You are a thoughtful career coach discussing a user's resume.
+Answer questions using only the resume and conversation context. Ask one concise follow-up question when it would help you learn about the user's actual responsibilities, impact, preferences, or target role. Never invent facts or claim the user has experience that is not supported. Give practical, specific advice.`;
+  const conversation = messages.slice(-12).map((message) => `${message.role.toUpperCase()}: ${message.content}`).join('\n');
+  const userPrompt = `Resume:
+${resumeText.slice(0, 30000)}
+
+Conversation:
+${conversation}`;
+  const result = await executeUnifiedAI(systemPrompt, userPrompt, {
+    provider: ai_config?.provider,
+    model: ai_config?.model,
+    customBaseUrl: ai_config?.customBaseUrl,
+    customApiKey: ai_config?.customApiKey,
+    temperature: ai_config?.temperature ?? 0.3,
+  });
+  return result.text.trim();
+}
+
+export async function regenerateResumeText(
+  selectedResumeText: string,
+  ai_config?: AIConfigSettings
+): Promise<{ markdown: string; plain_text: string }> {
+  const systemPrompt = `You are an expert ATS resume editor.
+Rewrite the supplied resume draft into a polished, truthful, single-column resume.
+Preserve every factual detail and do not invent employers, dates, skills, responsibilities, or metrics.
+Improve clarity, grammar, consistency, section headings, and bullet structure.
+Return ONLY valid JSON in this exact shape:
+{"markdown":"complete Markdown resume","plain_text":"complete plain-text resume"}`;
+  const userPrompt = `Selected resume draft:
+${selectedResumeText.slice(0, 30000)}`;
+
+  const { text } = await executeUnifiedAI(systemPrompt, userPrompt, {
+    provider: ai_config?.provider,
+    model: ai_config?.model,
+    customBaseUrl: ai_config?.customBaseUrl,
+    customApiKey: ai_config?.customApiKey,
+    temperature: ai_config?.temperature ?? 0.2,
+  });
+  const parsed = cleanJsonResponse(text);
+  if (!parsed?.markdown || !parsed?.plain_text) {
+    throw new Error('AI returned an incomplete regenerated resume.');
+  }
+  return {
+    markdown: String(parsed.markdown),
+    plain_text: String(parsed.plain_text),
+  };
+}
+
 
 export { cleanJsonResponse };
-

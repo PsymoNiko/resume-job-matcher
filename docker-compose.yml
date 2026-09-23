@@ -1,0 +1,39 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DB_TYPE: postgresql
+      DB_HOST: global-postgres
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-global_admin}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      DB_NAME: ${DB_NAME:-postgres}
+      DB_SSL: ${DB_SSL:-false}
+    volumes:
+      - app-data:/app/data
+    restart: unless-stopped
+
+    networks:
+      - default
+      - shared-postgres
+      - me_network
+
+volumes:
+  app-data:
+
+networks:
+  me_network:
+    external: true
+    name: me_network
+  shared-postgres:
+    external: true
+    name: databases_and_storages_default

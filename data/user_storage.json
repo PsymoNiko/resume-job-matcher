@@ -1,0 +1,130 @@
+{
+  "users": {
+    "guest_user_default": {
+      "id": "guest_user_default",
+      "email": "alex.chen@example.com",
+      "name": "Alex Chen",
+      "auth_provider": "github",
+      "github_username": "alexchen-dev",
+      "avatar_url": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
+      "free_tries_used": 0,
+      "created_at": 1790084343385
+    },
+    "admin_user_primary": {
+      "id": "admin_user_primary",
+      "email": "alimohammadnia127@gmail.com",
+      "name": "Ali (Admin)",
+      "auth_provider": "email",
+      "role": "admin",
+      "unlimited_until": 1821620343385,
+      "free_tries_used": 0,
+      "avatar_url": "https://api.dicebear.com/7.x/initials/svg?seed=Ali+Admin",
+      "created_at": 1790084343385
+    }
+  },
+  "profiles": {
+    "guest_user_default": {
+      "user_id": "guest_user_default",
+      "name": "Alex Chen",
+      "email": "alex.chen@example.com",
+      "phone": "+1 (415) 555-0192",
+      "location": "San Francisco, CA (Open to Remote)",
+      "avatar_url": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
+      "title": "Staff Full-Stack & Distributed Systems Engineer",
+      "bio": "Staff engineer with 8+ years architecting event-driven microservices, high-throughput streaming systems, and responsive modern web applications.",
+      "github_username": "alexchen-dev",
+      "linkedin_url": "https://linkedin.com/in/alexchen-dev",
+      "portfolio_url": "https://alexchen.dev",
+      "community_links": [
+        "github.com/alexchen-dev",
+        "linkedin.com/in/alexchen-dev",
+        "discord.gg/engineering",
+        "x.com/alexchen_dev"
+      ],
+      "updated_at": 1790084343385
+    },
+    "admin_user_primary": {
+      "user_id": "admin_user_primary",
+      "name": "Ali (System Administrator)",
+      "email": "alimohammadnia127@gmail.com",
+      "phone": "",
+      "location": "Global (Admin HQ)",
+      "avatar_url": "https://api.dicebear.com/7.x/initials/svg?seed=Ali+Admin",
+      "title": "Administrator & System Architect",
+      "bio": "Administrator with unrestricted lifetime access to all autonomous pipeline stages, multi-model AI routing, and TON blockchain settlement controls.",
+      "github_username": "",
+      "linkedin_url": "",
+      "portfolio_url": "",
+      "community_links": [
+        "t.me/telegram"
+      ],
+      "updated_at": 1790084343385
+    }
+  },
+  "experiences": {
+    "guest_user_default": [
+      {
+        "id": "exp-seed-1",
+        "user_id": "guest_user_default",
+        "title": "Lead Architect & Core Maintainer",
+        "company_or_org": "Nexus Stream Engine (Open Source)",
+        "role_type": "opensource",
+        "start_date": "2023-01",
+        "end_date": "Present",
+        "is_current": true,
+        "location": "Remote",
+        "tech_stack": [
+          "TypeScript",
+          "Go",
+          "Redis Streams",
+          "WebSockets",
+          "Docker"
+        ],
+        "bullets": [
+          "Architected distributed WebSocket streaming gateway in TypeScript and Go sustaining 50,000 concurrent sockets with p99 latency under 8ms.",
+          "Engineered sliding-window rate limiter and backpressure pipeline, reducing dropped frame events by 94% under synthetic DDOS conditions.",
+          "Grew community adoption to 2,400+ GitHub stars with 100% automated test coverage in GitHub Actions."
+        ],
+        "quantified_impact": [
+          "50k concurrent sockets at <8ms p99 latency",
+          "94% reduction in dropped socket frames"
+        ],
+        "repo_url": "https://github.com/alexchen-dev/nexus-stream-engine",
+        "stars": 2420,
+        "source": "github_activity",
+        "updated_at": 1790084343385
+      },
+      {
+        "id": "exp-seed-2",
+        "user_id": "guest_user_default",
+        "title": "Senior Systems Engineer",
+        "company_or_org": "HyperScale Systems",
+        "role_type": "work",
+        "start_date": "2021-03",
+        "end_date": "2023-01",
+        "is_current": false,
+        "location": "San Francisco, CA",
+        "tech_stack": [
+          "TypeScript",
+          "Node.js",
+          "PostgreSQL",
+          "Kubernetes",
+          "AWS"
+        ],
+        "bullets": [
+          "Spearheaded migration of legacy monolith to modular TypeScript microservices on Kubernetes, reducing deployment cycle times from bi-weekly to continuous daily releases.",
+          "Optimized PostgreSQL indexing and read-replica routing across 18 high-cardinality tables, decreasing database CPU utilization by 38% under peak traffic.",
+          "Mentored 6 junior and mid-level engineers in distributed debugging, telemetry tracing, and clean architectural design."
+        ],
+        "quantified_impact": [
+          "Continuous daily releases enabled",
+          "38% reduction in peak database CPU load"
+        ],
+        "repo_url": "https://github.com/alexchen-dev/cloud-infra-orchestrator",
+        "stars": 830,
+        "source": "user_created",
+        "updated_at": 1790084343385
+      }
+    ]
+  }
+}

@@ -11,6 +11,7 @@ import { ExperienceManagerModal } from './components/ExperienceManagerModal';
 import { AIModelSettingsModal } from './components/AIModelSettingsModal';
 import { DatabaseSettingsModal } from './components/DatabaseSettingsModal';
 import { TonBillingModal } from './components/TonBillingModal';
+import { ResumeAnalyzer } from './components/ResumeAnalyzer';
 import { 
   GitHubProfileData, 
   MasterProfile, 
@@ -303,13 +304,23 @@ export default function App() {
 
   const handleAIUpdateExperience = async (id: string, userPrompt: string) => {
     const token = localStorage.getItem('resume_job_matcher_auth_token') || 'guest';
+    const experience = experiences.find((item) => item.id === id);
+    const repository = experience?.repo_url
+      ? profileData?.repositories.find((repo) => repo.html_url === experience.repo_url)
+      : undefined;
+    const repositoryFeature = repository
+      ? [
+          repository.description,
+          repository.readme_snippet ? `README: ${repository.readme_snippet.slice(0, 1800)}` : '',
+        ].filter(Boolean).join('\n\n')
+      : experience?.repository_feature;
     const res = await fetch(`/api/user/experiences/${id}/ai-enhance`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-user-id': token,
       },
-      body: JSON.stringify({ userPrompt, ai_config: aiConfig }),
+      body: JSON.stringify({ userPrompt, ai_config: aiConfig, repository_feature: repositoryFeature }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'AI rewrite failed');
@@ -330,7 +341,13 @@ export default function App() {
       end_date: 'Present',
       is_current: true,
       tech_stack: Object.keys(repo.languages || {}),
-      bullets: repo.recent_commits?.length ? repo.recent_commits : [repo.description || 'Core maintainer and architect.'],
+      repository_feature: [
+        repo.description,
+        repo.readme_snippet ? `README: ${repo.readme_snippet.slice(0, 1800)}` : '',
+      ].filter(Boolean).join('\n\n') || `Open-source repository developed and maintained by @${profileData.username}.`,
+      bullets: [
+        repo.description || 'Open-source repository developed and maintained by the candidate.',
+      ],
       quantified_impact: [`${repo.stars || 0} GitHub Stars`, `${repo.forks || 0} Forks`],
       repo_url: repo.html_url,
       stars: repo.stars,
@@ -923,6 +940,7 @@ export default function App() {
 
       {/* Main Stage View Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        <ResumeAnalyzer aiConfig={aiConfig} />
         {currentStage === 1 && (
           <ExperienceParserView
             profileData={profileData}
