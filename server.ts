@@ -32,6 +32,8 @@ import {
   adminResetUserQuota,
   isUserAdmin,
 } from './server/tonBilling';
+import { startTelegramBot } from './server/telegramBot';
+import { getAdminConfig, isAdminSecretValid, updateAdminConfig } from './server/adminConfig';
 
 dotenv.config();
 
@@ -39,6 +41,20 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json({ limit: '15mb' }));
+
+app.get('/api/admin/config', (req, res) => {
+  if (!isAdminSecretValid(req.headers['x-admin-secret'] as string)) {
+    return res.status(401).json({ error: 'Administrator authentication required.' });
+  }
+  res.json({ config: getAdminConfig() });
+});
+
+app.post('/api/admin/config', (req, res) => {
+  if (!isAdminSecretValid(req.headers['x-admin-secret'] as string)) {
+    return res.status(401).json({ error: 'Administrator authentication required.' });
+  }
+  res.json({ config: updateAdminConfig(req.body || {}) });
+});
 
 // TonConnect Manifest Endpoint (Required for TON Network Wallets: Tonkeeper, @wallet, etc.)
 app.get('/tonconnect-manifest.json', (req, res) => {
@@ -624,7 +640,7 @@ ${JSON.stringify(
 )}`;
 
     let parsedProfile;
-    let engineUsed = 'gemini:gemini-3.8-flash';
+    let engineUsed = 'gemini:gemini-2.5-flash';
     let fallbackMode = false;
     let noticeMsg: string | undefined;
 
@@ -740,7 +756,7 @@ app.post('/api/fetch-job-from-url', async (req, res) => {
     res.json({
       ...analysis,
       meta: {
-        engine: ai_config?.model || 'gemini-3.8-flash',
+        engine: ai_config?.model || 'gemini-2.5-flash',
         source_url: trimmedUrl,
         extracted_chars: cleanText.length,
       },
@@ -791,7 +807,7 @@ app.post('/api/parse-job-document', async (req, res) => {
     res.json({
       ...analysis,
       meta: {
-        engine: ai_config?.model || 'gemini-3.8-flash',
+        engine: ai_config?.model || 'gemini-2.5-flash',
         file_name: file_name || 'document',
         extracted_chars: extractedText.length,
       },
@@ -951,7 +967,7 @@ Target Job Description:
 ${job_description}`;
 
     let parsedMatch;
-    let engineUsed = 'gemini:gemini-3.8-flash';
+    let engineUsed = 'gemini:gemini-2.5-flash';
     let fallbackMode = false;
     let noticeMsg: string | undefined;
 
@@ -1125,7 +1141,7 @@ Match Analysis & Selected Projects:
 ${JSON.stringify(match_analysis, null, 2)}`;
 
     let parsedResume;
-    let engineUsed = 'gemini:gemini-3.8-flash';
+    let engineUsed = 'gemini:gemini-2.5-flash';
     let fallbackMode = false;
     let noticeMsg: string | undefined;
 
@@ -1192,6 +1208,7 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Self-Analyzer AI Agent server running on http://0.0.0.0:${PORT}`);
+    startTelegramBot();
   });
 }
 

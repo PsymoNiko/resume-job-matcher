@@ -10,6 +10,7 @@ Key files to read before making changes:
 - `server/db.ts` — JSON-backed default cache plus optional PostgreSQL sync and seeded guest/admin accounts.
 - `src/App.tsx` — orchestrates the multi-stage job-matching workflow and UI state.
 - `src/components/ResumeAnalyzer.tsx` — standalone resume upload, AI review, line-level choices, resume chat, and regeneration UI.
+- `server/telegramBot.ts` — optional Telegram Bot API long-polling adapter for the resume workflow.
 - `src/types.ts` — shared TypeScript DTOs used by frontend and backend.
 - `src/data/presets.ts` — sample profiles and job descriptions for demo/local development.
 - `.env.example` — required environment configuration for Gemini, alternate providers, DB, and TON billing.
@@ -55,6 +56,10 @@ The UI also exposes auth, profile editing, experience management, AI model setti
 
 Keep route logic in `server.ts` unless a change clearly belongs in a dedicated helper module.
 
+When `TELEGRAM_BOT_TOKEN` is configured, `server.ts` starts `server/telegramBot.ts` after the HTTP server binds. The bot uses Telegram long polling, so only one production instance should run the bot token at a time. It supports `/start`, `/help`, `/reset`, `/github`, `/synthesize`, `/job`, `/joburl`, `/jobdoc`, `/match`, `/tailor`, profile/experience/quota/provider/database commands, PDF/TXT/Markdown document uploads, inline current-versus-improved line choices, TON payment commands, regeneration, and resume chat. Bot sessions are currently in-memory and are lost on restart. The bot calls the local Express API for workflow operations so route validation, quota checks, persistence, and billing behavior stay shared with the web app.
+
+Telegram command behavior is implemented in `server/telegramBot.ts`: update the help text, command dispatch, and any `setMyCommands` registration together when adding a command. Telegram’s command menu can be configured programmatically through the Bot API; do not rely on manually configured BotFather commands when the command set is intended to track the deployed code.
+
 Resume document endpoints are:
 - `POST /api/analyze-resume` — accepts JSON containing `file_name`, `file_type`, `file_base64` or `file_text`, and optional `ai_config`; extracts PDF text and returns `analysis` plus `source_text`.
 - `POST /api/chat-about-resume` — accepts `resume_text`, ordered `{ role, content }` messages, and optional `ai_config`; the latest message must be a non-empty user message.
@@ -73,6 +78,7 @@ Resume-specific AI functions include `analyzeResumeText`, `chatAboutResume`, and
 - Shared DTOs live in `src/types.ts`; treat them as the canonical contract between frontend and backend.
 - The app expects `x-user-id` as the effective user identity header in many routes; follow the existing guest/default semantics instead of inventing a new auth pattern.
 - The default guest identity is `guest_user_default`; when no user ID is supplied, the app behaves as that user.
+- Telegram requests use the chat ID as the in-memory session key and pass the same user ID through `x-user-id` and `user_id` when calling the local API.
 - Prefer env-driven configuration in `.env` / `.env.example` over hard-coded secrets or provider IDs.
 - AI outputs are expected to be structured JSON; sanitize/validate them through the helpers in `server/aiService.ts` before using them elsewhere.
 - Preserve the current TON quota/billing behavior when adding feature gating or new endpoints.

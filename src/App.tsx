@@ -136,9 +136,9 @@ export default function App() {
   const [aiConfig, setAiConfig] = useState<AIConfigSettings>(() => {
     try {
       const saved = localStorage.getItem('resume_job_matcher_ai_config');
-      return saved ? JSON.parse(saved) : { provider: 'gemini', model: 'gemini-3.8-flash', temperature: 0.2 };
+      return saved ? JSON.parse(saved) : { provider: 'deepseek', model: 'deepseek-chat', temperature: 0.2 };
     } catch {
-      return { provider: 'gemini', model: 'gemini-3.8-flash', temperature: 0.2 };
+      return { provider: 'deepseek', model: 'deepseek-chat', temperature: 0.2 };
     }
   });
 

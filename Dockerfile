@@ -12,6 +12,9 @@ FROM node:22-bookworm-slim AS runtime
 
 ENV NODE_ENV=production
 ENV PORT=3000
+# Node's built-in fetch uses these environment proxies when enabled. Compose
+# supplies them only when the host/deployment environment has a proxy.
+ENV NODE_USE_ENV_PROXY=1
 
 WORKDIR /app
 

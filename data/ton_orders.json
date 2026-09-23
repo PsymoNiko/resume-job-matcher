@@ -1,0 +1,16 @@
+{
+  "ton_1790172299045_59m4l": {
+    "orderId": "ton_1790172299045_59m4l",
+    "userId": "admin_user_primary",
+    "amountUsdt": 1,
+    "amountTon": 0.75,
+    "selectedCurrency": "USDT",
+    "recipientAddress": "EQB_v0_4T6i5m8c0P5hE39Hk3q91Nf0xL6wP5R0U4M3V2TON",
+    "commentMemo": "pass:admin_user:_59m4l",
+    "deepLinkTonkeeper": "https://app.tonkeeper.com/transfer/EQB_v0_4T6i5m8c0P5hE39Hk3q91Nf0xL6wP5R0U4M3V2TON?amount=750000000&text=pass%3Aadmin_user%3A_59m4l",
+    "deepLinkTelegramWallet": "https://t.me/wallet?startattach=ton_transfer_EQB_v0_4T6i5m8c0P5hE39Hk3q91Nf0xL6wP5R0U4M3V2TON_750000000",
+    "status": "pending",
+    "createdAt": 1790172299045,
+    "expiresAt": 1790174099045
+  }
+}

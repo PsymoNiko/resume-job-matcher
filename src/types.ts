@@ -262,6 +262,7 @@ export type AIProvider =
   | 'openai' 
   | 'anthropic' 
   | 'deepseek' 
+  | 'agentrouter'
   | 'self_hosted' 
   | 'custom_openai'
   | 'custom';

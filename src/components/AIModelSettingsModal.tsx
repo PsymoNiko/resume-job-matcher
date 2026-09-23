@@ -29,8 +29,8 @@ export const AIModelSettingsModal: React.FC<AIModelSettingsModalProps> = ({
   currentConfig,
   onSaveConfig,
 }) => {
-  const [provider, setProvider] = useState<AIProvider>(currentConfig.provider || 'gemini');
-  const [model, setModel] = useState<string>(currentConfig.model || 'gemini-3.8-flash');
+  const [provider, setProvider] = useState<AIProvider>(currentConfig.provider || 'deepseek');
+  const [model, setModel] = useState<string>(currentConfig.model || 'deepseek-chat');
   const [temperature, setTemperature] = useState<number>(currentConfig.temperature ?? 0.2);
   const [customBaseUrl, setCustomBaseUrl] = useState<string>(currentConfig.customBaseUrl || 'http://localhost:11434/v1');
   const [customApiKey, setCustomApiKey] = useState<string>(currentConfig.customApiKey || '');
@@ -50,8 +50,8 @@ export const AIModelSettingsModal: React.FC<AIModelSettingsModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
-      setProvider(currentConfig.provider || 'gemini');
-      setModel(currentConfig.model || 'gemini-3.8-flash');
+      setProvider(currentConfig.provider || 'deepseek');
+      setModel(currentConfig.model || 'deepseek-chat');
       setTemperature(currentConfig.temperature ?? 0.2);
       setCustomBaseUrl(currentConfig.customBaseUrl || 'http://localhost:11434/v1');
       setCustomApiKey(currentConfig.customApiKey || '');
@@ -64,7 +64,9 @@ export const AIModelSettingsModal: React.FC<AIModelSettingsModalProps> = ({
           if (data.presetModels) setAvailableModels(data.presetModels);
           if (Array.isArray(data.providers)) {
             const detected: Record<string, boolean> = {};
-            const selfHosted = data.providers.find((item: { id?: string }) => item.id === 'self_hosted');
+            const endpointProvider = data.providers.find((item: { id?: string }) =>
+              item.id === 'self_hosted' || item.id === 'agentrouter'
+            );
             for (const item of data.providers) {
               if (item.id) detected[item.id] = Boolean(item.isConfigured);
             }
@@ -72,10 +74,10 @@ export const AIModelSettingsModal: React.FC<AIModelSettingsModalProps> = ({
 
             // Prefer the server's configured endpoint over the modal's local default.
             if (
-              selfHosted?.defaultBaseUrl &&
+              endpointProvider?.defaultBaseUrl &&
               (!currentConfig.customBaseUrl || currentConfig.customBaseUrl === 'http://localhost:11434/v1')
             ) {
-              setCustomBaseUrl(selfHosted.defaultBaseUrl);
+              setCustomBaseUrl(endpointProvider.defaultBaseUrl);
             }
           }
         })
@@ -86,29 +88,34 @@ export const AIModelSettingsModal: React.FC<AIModelSettingsModalProps> = ({
   if (!isOpen) return null;
 
   const providerList: Array<{ id: AIProvider; name: string; desc: string; icon: string }> = [
-    { id: 'gemini', name: 'Google Gemini', desc: 'Default production AI with zero-barrier server key', icon: '✨' },
+    { id: 'gemini', name: 'Google Gemini', desc: 'Optional Google AI provider', icon: '✨' },
     { id: 'openai', name: 'OpenAI', desc: 'GPT-4o, GPT-4o Mini, o1, o3-mini', icon: '🟢' },
     { id: 'anthropic', name: 'Anthropic Claude', desc: 'Claude 3.7 Sonnet, Claude 3.5 Haiku', icon: '🟠' },
     { id: 'deepseek', name: 'DeepSeek', desc: 'DeepSeek-V3 & DeepSeek-R1 Reasoner', icon: '🔵' },
+    { id: 'agentrouter', name: 'AgentRouter', desc: 'Use models available in the AgentRouter console', icon: '🌐' },
     { id: 'self_hosted', name: 'Self-Hosted / Local', desc: 'Ollama, vLLM, LocalAI, Gemma, Llama', icon: '🖥️' },
   ];
 
   const filteredModels = availableModels.filter((m) => m.provider === provider);
-  const isSelfHosted = provider === 'self_hosted' || provider === 'custom_openai' || provider === 'custom';
+  const isSelfHosted = provider === 'self_hosted' || provider === 'custom_openai' || provider === 'agentrouter' || provider === 'custom';
 
   const handleProviderChange = (newProvider: AIProvider) => {
     setProvider(newProvider);
     setTestResult(null);
+    if (newProvider === 'agentrouter' && (!customBaseUrl || customBaseUrl === 'http://localhost:11434/v1')) {
+      setCustomBaseUrl('https://agentrouter.org/pg');
+    }
     const defaults: Record<AIProvider, string> = {
-      gemini: 'gemini-3.8-flash',
+      gemini: 'gemini-2.5-flash',
       openai: 'gpt-4o',
       anthropic: 'claude-3-7-sonnet-20250219',
       deepseek: 'deepseek-chat',
       self_hosted: 'gemma2:9b',
       custom_openai: 'gpt-4o',
+      agentrouter: 'agentrouter-default',
       custom: 'gemma2:9b',
     };
-    setModel(defaults[newProvider] || 'gemini-3.8-flash');
+    setModel(defaults[newProvider] || 'gemini-2.5-flash');
   };
 
   const handleRunConnectionTest = async () => {
@@ -317,11 +324,13 @@ export const AIModelSettingsModal: React.FC<AIModelSettingsModalProps> = ({
                   type="text"
                   value={customBaseUrl}
                   onChange={(e) => setCustomBaseUrl(e.target.value)}
-                  placeholder="http://localhost:11434/v1"
+                  placeholder={provider === 'agentrouter' ? 'https://agentrouter.org/pg' : 'http://localhost:11434/v1'}
                   className="w-full bg-stone-900 border border-stone-800 rounded-lg px-3 py-1.5 text-xs font-mono text-stone-200 placeholder-stone-600 focus:outline-none focus:border-amber-500"
                 />
                 <p className="text-[10px] text-stone-500 mt-1">
-                  Works directly with <code className="text-amber-400 font-mono">ollama serve</code>, vLLM, LocalAI, or any OpenAI-compatible proxy.
+                  {provider === 'agentrouter'
+                    ? <>Use <code className="text-amber-400 font-mono">https://agentrouter.org/pg</code>. Get the API token from <code className="text-amber-400 font-mono">ps.air-outer.com/console/token</code>.</>
+                    : <>Works directly with <code className="text-amber-400 font-mono">ollama serve</code>, vLLM, LocalAI, or any OpenAI-compatible proxy.</>}
                 </p>
               </div>
             )}

@@ -3,14 +3,34 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        HTTP_PROXY: ${DOCKER_HTTP_PROXY:-}
+        HTTPS_PROXY: ${DOCKER_HTTPS_PROXY:-}
+        ALL_PROXY: ${DOCKER_ALL_PROXY:-}
+        NO_PROXY: ${DOCKER_NO_PROXY:-localhost,127.0.0.1,host.docker.internal,global-postgres}
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
     ports:
       - "3000:3000"
+
     env_file:
       - path: .env
         required: false
+
     environment:
       NODE_ENV: production
       PORT: 3000
+
+      # Node.js proxy configuration
+      NODE_USE_ENV_PROXY: ${NODE_USE_ENV_PROXY:-1}
+      HTTP_PROXY: ${DOCKER_HTTP_PROXY:-}
+      HTTPS_PROXY: ${DOCKER_HTTPS_PROXY:-}
+      ALL_PROXY: ${DOCKER_ALL_PROXY:-}
+      NO_PROXY: ${DOCKER_NO_PROXY:-localhost,127.0.0.1,host.docker.internal,global-postgres}
+
+      # Database configuration
       DB_TYPE: postgresql
       DB_HOST: global-postgres
       DB_PORT: 5432
@@ -18,8 +38,10 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
       DB_NAME: ${DB_NAME:-postgres}
       DB_SSL: ${DB_SSL:-false}
+
     volumes:
       - app-data:/app/data
+
     restart: unless-stopped
 
     networks:
@@ -34,6 +56,8 @@ networks:
   me_network:
     external: true
     name: me_network
+
   shared-postgres:
     external: true
     name: databases_and_storages_default
+

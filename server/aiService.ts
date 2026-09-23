@@ -13,9 +13,10 @@ import {
 import { ResumeAnalysis } from '../src/types';
 
 // Supported default models
-export const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
-export const SECONDARY_GEMINI_MODEL = 'gemini-3.1-flash-lite';
-export const TERTIARY_GEMINI_MODEL = 'gemini-flash-latest';
+// Keep the server fallback chain on publicly available Gemini model IDs.
+export const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash';
+export const SECONDARY_GEMINI_MODEL = 'gemini-2.0-flash';
+export const TERTIARY_GEMINI_MODEL = 'gemini-2.5-flash-lite';
 
 export interface GenerationResult {
   text: string;
@@ -83,29 +84,29 @@ async function postOpenAICompatible(
 export const PRESET_MODELS: AIModelOption[] = [
   // Google Gemini
   {
-    id: 'gemini-3.8-flash',
-    name: 'Gemini 3.8 Flash',
+    id: 'gemini-2.5-flash',
+    name: 'Gemini 2.5 Flash',
     provider: 'gemini',
     description: 'Ultra-fast, state-of-the-art multimodal model optimized for reasoning & structured JSON.',
     badge: 'Recommended',
     isDefault: true,
   },
   {
-    id: 'gemini-3.1-pro-preview',
-    name: 'Gemini 3.1 Pro Preview',
+    id: 'gemini-2.5-pro',
+    name: 'Gemini 2.5 Pro',
     provider: 'gemini',
     description: 'High-capability frontier model for deep architectural analysis and complex synthesis.',
     badge: 'Frontier',
   },
   {
-    id: 'gemini-3.1-flash-lite',
-    name: 'Gemini 3.1 Flash Lite',
+    id: 'gemini-2.5-flash-lite',
+    name: 'Gemini 2.5 Flash Lite',
     provider: 'gemini',
     description: 'Low-latency, lightweight Gemini model with resilient high throughput.',
   },
   {
-    id: 'gemini-flash-latest',
-    name: 'Gemini Flash Latest',
+    id: 'gemini-2.0-flash',
+    name: 'Gemini 2.0 Flash',
     provider: 'gemini',
     description: 'Continuously updated production Flash tier.',
   },
@@ -117,6 +118,13 @@ export const PRESET_MODELS: AIModelOption[] = [
     provider: 'openai',
     description: 'Omni-directional flagship model with excellent analytical skills and structured reasoning.',
     badge: 'Cloud',
+  },
+  {
+    id: 'agentrouter-default',
+    name: 'AgentRouter selected model',
+    provider: 'agentrouter',
+    description: 'Model selected in the AgentRouter console.',
+    badge: 'Gateway',
   },
   {
     id: 'gpt-4o-mini',
@@ -225,7 +233,13 @@ function cleanJsonResponse(rawText: string): any {
     const lastBrace = cleaned.lastIndexOf('}');
     if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
       const extracted = cleaned.substring(firstBrace, lastBrace + 1);
-      return JSON.parse(extracted);
+      try {
+        return JSON.parse(extracted);
+      } catch {
+        // Some local models emit harmless trailing commas despite being asked for JSON.
+        const repaired = extracted.replace(/,\s*([}\]])/g, '$1');
+        return JSON.parse(repaired);
+      }
     }
     throw new Error('Could not parse valid JSON from AI response.');
   }
@@ -243,7 +257,10 @@ export async function executeGeminiWithRetry(
   customKey?: string
 ): Promise<GenerationResult> {
   const ai = getGenAI(customKey);
-  const modelChain = Array.from(new Set([targetModel, DEFAULT_GEMINI_MODEL, SECONDARY_GEMINI_MODEL, TERTIARY_GEMINI_MODEL]));
+  const normalizedTargetModel = /^gemini-3\.|^gemini-flash-latest$/.test(targetModel)
+    ? DEFAULT_GEMINI_MODEL
+    : targetModel;
+  const modelChain = Array.from(new Set([normalizedTargetModel, DEFAULT_GEMINI_MODEL, SECONDARY_GEMINI_MODEL, TERTIARY_GEMINI_MODEL]));
 
   let lastError: any = null;
 
@@ -489,6 +506,9 @@ async function callCustomOpenAI(
     };
     if (apiKey && apiKey !== 'not-needed') {
       headers.Authorization = `Bearer ${apiKey}`;
+      if (options.providerName === 'AgentRouter') {
+        headers['x-api-key'] = apiKey;
+      }
     }
 
     let res: { ok: boolean; status: number; text: string } | undefined;
@@ -504,6 +524,7 @@ async function callCustomOpenAI(
             { role: 'user', content: userPrompt },
           ],
           temperature: options.temperature ?? 0.2,
+          format: 'json',
           stream: false,
         }),
         options.timeoutMs || 40000,
@@ -518,12 +539,24 @@ async function callCustomOpenAI(
 
     if (!res || !res.ok) {
       const errBody = res ? res.text : lastErrorBody;
+      const authHint = options.providerName === 'AgentRouter' && res?.status === 401
+        ? ' Use an AgentRouter API token from https://ps.air-outer.com/console/token, not the console login password.'
+        : '';
       throw new Error(
-        `${options.providerName || 'Self-Hosted LLM'} endpoint error (${res?.status || 'network'} at ${baseUrl}): ${errBody.slice(0, 200)}`
+        `${options.providerName || 'Self-Hosted LLM'} endpoint error (${res?.status || 'network'} at ${baseUrl}): ${errBody.slice(0, 200)}${authHint}`
       );
     }
 
-    const data = JSON.parse(res.text);
+    let data: { choices?: Array<{ message?: { content?: string } }> };
+    try {
+      data = JSON.parse(res.text);
+    } catch {
+      const contentType = res.text.trimStart().startsWith('<') ? 'HTML' : 'non-JSON';
+      throw new Error(
+        `${options.providerName || 'Custom endpoint'} returned ${contentType} instead of JSON (${res.status}). ` +
+        'Check that the base URL points to an OpenAI-compatible /v1 endpoint.'
+      );
+    }
     const content = data.choices?.[0]?.message?.content;
     if (!content) throw new Error(`No content returned from ${options.providerName || 'custom endpoint'}`);
     return content;
@@ -534,19 +567,27 @@ async function callCustomOpenAI(
 
 /**
  * Unified AI execution router that runs the user's chosen provider & model,
- * with seamless fallback to Gemini or heuristic recovery when external service keys
- * or networks are unavailable.
+ * with explicit provider selection. Gemini is opt-in and is never used as an
+ * implicit fallback for another provider.
  */
 export async function executeUnifiedAI(
   systemPrompt: string,
   userPrompt: string,
   options?: AIExecutionOptions
 ): Promise<UnifiedGenerationResult> {
-  const provider: AIProvider = options?.provider || 'gemini';
-  const model = options?.model || DEFAULT_GEMINI_MODEL;
+  const configuredProvider = process.env.AI_DEFAULT_PROVIDER as AIProvider | undefined;
+  const enabledProviders = (process.env.AI_ENABLED_PROVIDERS || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const provider: AIProvider = options?.provider || configuredProvider || 'deepseek';
+  const model = options?.model || process.env.AI_DEFAULT_MODEL || 'deepseek-chat';
   const temp = options?.temperature ?? 0.2;
 
   console.log(`[Unified AI Router] Request received for provider: '${provider}', model: '${model}'`);
+  if (enabledProviders.length > 0 && !enabledProviders.includes(provider)) {
+    throw new Error(`AI provider '${provider}' is disabled by administrator configuration.`);
+  }
 
   // 1. Google Gemini
   if (provider === 'gemini') {
@@ -579,15 +620,7 @@ export async function executeUnifiedAI(
         fallbackTriggered: false,
       };
     } catch (openAiErr: any) {
-      console.warn(`[Unified AI Router] OpenAI (${model}) notice: ${openAiErr.message}. Gracefully engaging Gemini resilience chain...`);
-      const fallback = await executeGeminiWithRetry(systemPrompt, userPrompt, temp);
-      return {
-        text: fallback.text,
-        provider: 'gemini',
-        modelUsed: fallback.modelUsed,
-        fallbackTriggered: true,
-        notice: `OpenAI was unreachable (${openAiErr.message}). Output was synthesized seamlessly via Gemini fallback.`,
-      };
+      throw new Error(`OpenAI request failed: ${openAiErr.message}`);
     }
   }
 
@@ -607,15 +640,7 @@ export async function executeUnifiedAI(
         fallbackTriggered: false,
       };
     } catch (anthropicErr: any) {
-      console.warn(`[Unified AI Router] Anthropic (${model}) notice: ${anthropicErr.message}. Gracefully engaging Gemini resilience chain...`);
-      const fallback = await executeGeminiWithRetry(systemPrompt, userPrompt, temp);
-      return {
-        text: fallback.text,
-        provider: 'gemini',
-        modelUsed: fallback.modelUsed,
-        fallbackTriggered: true,
-        notice: `Anthropic Claude was unreachable (${anthropicErr.message}). Output was synthesized seamlessly via Gemini fallback.`,
-      };
+      throw new Error(`Anthropic request failed: ${anthropicErr.message}`);
     }
   }
 
@@ -635,59 +660,50 @@ export async function executeUnifiedAI(
         fallbackTriggered: false,
       };
     } catch (deepseekErr: any) {
-      console.warn(`[Unified AI Router] DeepSeek (${model}) notice: ${deepseekErr.message}. Gracefully engaging Gemini resilience chain...`);
-      const fallback = await executeGeminiWithRetry(systemPrompt, userPrompt, temp);
-      return {
-        text: fallback.text,
-        provider: 'gemini',
-        modelUsed: fallback.modelUsed,
-        fallbackTriggered: true,
-        notice: `DeepSeek was unreachable (${deepseekErr.message}). Output was synthesized seamlessly via Gemini fallback.`,
-      };
+      throw new Error(`DeepSeek request failed: ${deepseekErr.message}`);
     }
   }
 
   // 5. Self-Hosted (Ollama / vLLM / Gemma / DeepSeek-R1) or Custom OpenAI
-  if (provider === 'self_hosted' || provider === 'custom_openai') {
+  if (provider === 'agentrouter' || provider === 'self_hosted' || provider === 'custom_openai') {
     try {
+      const agentRouterModel = provider === 'agentrouter'
+        ? (model === 'agentrouter-default' || model.startsWith('agentrouter-default')
+          ? (process.env.AGENTROUTER_MODEL?.trim() || 'gpt-4o-mini')
+          : model)
+        : model;
       const text = await callCustomOpenAI(systemPrompt, userPrompt, {
-        baseUrl: options?.customBaseUrl,
-        model,
-        apiKey: options?.customApiKey,
+        baseUrl: provider === 'agentrouter'
+          ? (options?.customBaseUrl || process.env.AGENTROUTER_BASE_URL || 'https://agentrouter.org/pg')
+          : options?.customBaseUrl,
+        model: agentRouterModel,
+        apiKey: provider === 'agentrouter'
+          ? (options?.customApiKey || process.env.AGENTROUTER_API_KEY)
+          : options?.customApiKey,
         temperature: temp,
         timeoutMs: options?.timeoutMs,
-        providerName: provider === 'self_hosted' ? 'Self-Hosted LLM' : 'Custom Cloud Endpoint',
+        providerName: provider === 'agentrouter'
+          ? 'AgentRouter'
+          : provider === 'self_hosted'
+            ? 'Self-Hosted LLM'
+            : 'Custom Cloud Endpoint',
       });
       return {
         text,
         provider,
-        modelUsed: model,
+        modelUsed: agentRouterModel,
         fallbackTriggered: false,
       };
     } catch (customErr: any) {
-      if (provider === 'self_hosted') {
-        throw new Error(`Self-hosted AI connection failed: ${customErr.message}`);
+      if (provider === 'self_hosted' || provider === 'agentrouter') {
+        throw new Error(`${provider === 'agentrouter' ? 'AgentRouter' : 'Self-hosted AI'} connection failed: ${customErr.message}`);
       }
-      console.warn(`[Unified AI Router] Custom endpoint (${model}) notice: ${customErr.message}. Gracefully engaging Gemini resilience chain...`);
-      const fallback = await executeGeminiWithRetry(systemPrompt, userPrompt, temp);
-      return {
-        text: fallback.text,
-        provider: 'gemini',
-        modelUsed: fallback.modelUsed,
-        fallbackTriggered: true,
-        notice: `Target endpoint was unreachable (${customErr.message}). Output was synthesized seamlessly via Gemini fallback.`,
-      };
+      throw new Error(`Custom AI endpoint failed: ${customErr.message}`);
     }
   }
 
   // Default fallback
-  const res = await executeGeminiWithRetry(systemPrompt, userPrompt, temp);
-  return {
-    text: res.text,
-    provider: 'gemini',
-    modelUsed: res.modelUsed,
-    fallbackTriggered: res.fallbackTriggered,
-  };
+  throw new Error(`Unsupported AI provider: ${provider}`);
 }
 
 /**
@@ -742,19 +758,26 @@ export async function testAIConnection(config: AIConfigSettings): Promise<{
  * Returns list of supported providers and detected environment flags.
  */
 export function getAvailableAIProviders() {
+  const enabledProviders = (process.env.AI_ENABLED_PROVIDERS || '')
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean);
   return {
-    providers: [
-      { id: 'gemini', name: 'Google Gemini', isConfigured: Boolean(process.env.GEMINI_API_KEY) },
-      { id: 'openai', name: 'OpenAI', isConfigured: Boolean(process.env.OPENAI_API_KEY) },
-      { id: 'anthropic', name: 'Anthropic Claude', isConfigured: Boolean(process.env.ANTHROPIC_API_KEY) },
-      { id: 'deepseek', name: 'DeepSeek', isConfigured: Boolean(process.env.DEEPSEEK_API_KEY) },
-      {
-        id: 'self_hosted',
-        name: 'Self-Hosted LLM (Ollama / vLLM / Gemma / DeepSeek)',
-        isConfigured: Boolean(process.env.CUSTOM_LLM_BASE_URL),
-        defaultBaseUrl: process.env.CUSTOM_LLM_BASE_URL || 'http://localhost:11434/v1',
-      },
-      { id: 'custom_openai', name: 'Custom OpenAI-Compatible API', isConfigured: false },
+  providers: [
+    { id: 'gemini', name: 'Google Gemini', isConfigured: Boolean(process.env.GEMINI_API_KEY), enabled: !enabledProviders.length || enabledProviders.includes('gemini'), isDefault: process.env.AI_DEFAULT_PROVIDER === 'gemini' },
+    { id: 'openai', name: 'OpenAI', isConfigured: Boolean(process.env.OPENAI_API_KEY), enabled: !enabledProviders.length || enabledProviders.includes('openai'), isDefault: process.env.AI_DEFAULT_PROVIDER === 'openai' },
+    { id: 'anthropic', name: 'Anthropic Claude', isConfigured: Boolean(process.env.ANTHROPIC_API_KEY), enabled: !enabledProviders.length || enabledProviders.includes('anthropic'), isDefault: process.env.AI_DEFAULT_PROVIDER === 'anthropic' },
+    { id: 'deepseek', name: 'DeepSeek', isConfigured: Boolean(process.env.DEEPSEEK_API_KEY), enabled: !enabledProviders.length || enabledProviders.includes('deepseek'), isDefault: process.env.AI_DEFAULT_PROVIDER === 'deepseek' },
+    { id: 'agentrouter', name: 'AgentRouter', isConfigured: Boolean(process.env.AGENTROUTER_API_KEY), defaultBaseUrl: process.env.AGENTROUTER_BASE_URL || 'https://agentrouter.org/pg', enabled: !enabledProviders.length || enabledProviders.includes('agentrouter'), isDefault: process.env.AI_DEFAULT_PROVIDER === 'agentrouter' },
+    {
+      id: 'self_hosted',
+      name: 'Self-Hosted LLM (Ollama / vLLM / Gemma / DeepSeek)',
+      isConfigured: Boolean(process.env.CUSTOM_LLM_BASE_URL),
+      defaultBaseUrl: process.env.CUSTOM_LLM_BASE_URL || 'http://localhost:11434/v1',
+      enabled: !enabledProviders.length || enabledProviders.includes('self_hosted'),
+      isDefault: process.env.AI_DEFAULT_PROVIDER === 'self_hosted',
+    },
+    { id: 'custom_openai', name: 'Custom OpenAI-Compatible API', isConfigured: false, enabled: !enabledProviders.length || enabledProviders.includes('custom_openai'), isDefault: process.env.AI_DEFAULT_PROVIDER === 'custom_openai' },
     ],
     presetModels: PRESET_MODELS,
     environment_status: {
@@ -763,6 +786,9 @@ export function getAvailableAIProviders() {
       has_anthropic_key: Boolean(process.env.ANTHROPIC_API_KEY),
       has_deepseek_key: Boolean(process.env.DEEPSEEK_API_KEY),
       has_custom_llm_base_url: Boolean(process.env.CUSTOM_LLM_BASE_URL),
+      default_provider: process.env.AI_DEFAULT_PROVIDER || 'deepseek',
+      default_model: process.env.AI_DEFAULT_MODEL || 'deepseek-chat',
+      enabled_providers: enabledProviders,
     },
   };
 }

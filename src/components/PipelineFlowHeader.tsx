@@ -102,8 +102,8 @@ export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
   ];
 
   const getProviderBadge = () => {
-    const prov = currentAiConfig?.provider || 'gemini';
-    const model = currentAiConfig?.model || 'gemini-3.8-flash';
+    const prov = currentAiConfig?.provider || 'deepseek';
+    const model = currentAiConfig?.model || 'deepseek-chat';
     const displayModel = model.length > 18 ? `${model.slice(0, 16)}…` : model;
     
     let icon = '✨';
@@ -387,4 +387,3 @@ export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
     </header>
   );
 };
-
