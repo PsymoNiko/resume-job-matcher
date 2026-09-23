@@ -36,6 +36,11 @@ import {
   Cpu, 
   Database,
   Settings2,
+  LayoutDashboard,
+  FileSearch,
+  MessageSquare,
+  BriefcaseBusiness,
+  FileText,
   Layers, 
   Sparkles,
   ExternalLink,
@@ -68,6 +73,13 @@ export default function App() {
   const [dbModalOpen, setDbModalOpen] = useState<boolean>(false);
   const [architectureModalOpen, setArchitectureModalOpen] = useState<boolean>(false);
   const [billingModalOpen, setBillingModalOpen] = useState<boolean>(false);
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    try {
+      return localStorage.getItem('resume_job_matcher_theme') === 'dark' ? 'dark' : 'light';
+    } catch {
+      return 'light';
+    }
+  });
 
   // Telegram DWApp and TON Network Cryptocurrency Quota/Billing State
   const [dwappState, setDwappState] = useState<TelegramDWAppState>(() => initTelegramDWApp());
@@ -916,9 +928,18 @@ export default function App() {
   };
 
   const isAdmin = Boolean(quota?.isAdmin || currentUser?.role === 'admin');
+  const toggleTheme = () => {
+    setTheme((current) => {
+      const next = current === 'light' ? 'dark' : 'light';
+      try {
+        localStorage.setItem('resume_job_matcher_theme', next);
+      } catch {}
+      return next;
+    });
+  };
 
   return (
-    <div className="min-h-screen bg-stone-950 text-stone-100 flex flex-col font-sans">
+    <div className={`dashboard-shell dashboard-grid ${theme === 'dark' ? 'theme-dark' : ''} min-h-screen text-gray-900 flex flex-col font-sans`}>
       {/* 4-Stage Architectural Pipeline Flow Header */}
       <PipelineFlowHeader
         currentStage={currentStage}
@@ -940,26 +961,118 @@ export default function App() {
         onOpenProfileModal={() => setProfileModalOpen(true)}
         onOpenExperienceModal={() => setExperienceModalOpen(true)}
         onSignOut={handleSignOut}
+        theme={theme}
+        onToggleTheme={toggleTheme}
       />
 
-      {/* Main Stage View Area */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <div className="flex flex-1">
+        <aside className="dashboard-sidebar no-print hidden w-60 shrink-0 lg:block">
+          <div className="sticky top-0 flex min-h-[calc(100vh-86px)] flex-col p-4">
+            <div className="mb-5 flex items-center gap-2 px-2">
+              <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-cyan-400 to-indigo-600 text-xs font-bold text-white shadow-lg shadow-cyan-500/20">
+                AI
+              </div>
+              <div>
+                <div className="text-xs font-bold text-slate-100">ResumeAI</div>
+                <div className="text-[9px] uppercase tracking-[0.18em] text-slate-500">Career workspace</div>
+              </div>
+            </div>
+            <div className="mb-2 px-2 text-[9px] font-semibold uppercase tracking-[0.2em] text-slate-500">Workspace</div>
+            <nav className="space-y-1">
+              <button
+                type="button"
+                onClick={() => setCurrentStage(1)}
+                className="flex w-full items-center gap-3 rounded-lg bg-indigo-500/15 px-3 py-2.5 text-left text-xs text-cyan-200 ring-1 ring-indigo-400/20"
+              >
+                <LayoutDashboard className="h-4 w-4" /> Dashboard
+              </button>
+              {[
+                { stage: 1 as PipelineStage, label: 'Resume / GitHub', icon: FileSearch },
+                { stage: 2 as PipelineStage, label: 'AI Analysis', icon: Cpu },
+                { stage: 3 as PipelineStage, label: 'Job Matching', icon: BriefcaseBusiness },
+                { stage: 4 as PipelineStage, label: 'Resume Builder', icon: FileText },
+              ].map(({ stage, label, icon: Icon }) => (
+                <button
+                  key={stage}
+                  type="button"
+                  onClick={() => setCurrentStage(stage)}
+                  className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-xs transition ${
+                    currentStage === stage ? 'bg-cyan-400/10 text-cyan-200' : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
+                  }`}
+                >
+                  <Icon className="h-4 w-4" /> {label}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => document.getElementById('resume-analyzer')?.scrollIntoView({ behavior: 'smooth' })}
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-xs text-slate-400 transition hover:bg-white/5 hover:text-slate-200"
+              >
+                <MessageSquare className="h-4 w-4" /> AI Chat
+              </button>
+            </nav>
+            <div className="mt-auto space-y-2 border-t border-slate-800/70 pt-4">
+              <div className="px-2 text-[9px] font-semibold uppercase tracking-[0.2em] text-slate-500">Account</div>
+              <button type="button" onClick={() => setProfileModalOpen(true)} className="w-full rounded-lg px-3 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200">
+                Career Profile
+              </button>
+              {isAdmin && (
+                <div className="rounded-xl border border-indigo-400/20 bg-indigo-500/10 p-3">
+                  <div className="mb-2 flex items-center gap-2 text-[10px] font-semibold text-indigo-200">
+                    <ShieldCheck className="h-3.5 w-3.5" /> Admin Console
+                  </div>
+                  <button type="button" onClick={() => setAiModalOpen(true)} className="mb-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] text-slate-300 hover:bg-white/10">
+                    <Settings2 className="h-3.5 w-3.5" /> AI Configuration
+                  </button>
+                  <button type="button" onClick={() => setDbModalOpen(true)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] text-slate-300 hover:bg-white/10">
+                    <Database className="h-3.5 w-3.5" /> Database
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </aside>
+
+        <div className="dashboard-mobile-nav no-print flex gap-2 overflow-x-auto border-b border-gray-200 bg-white/90 px-4 py-3 lg:hidden">
+          {[
+            { stage: 1 as PipelineStage, label: 'Resume', icon: FileSearch },
+            { stage: 2 as PipelineStage, label: 'Analysis', icon: Cpu },
+            { stage: 3 as PipelineStage, label: 'Jobs', icon: BriefcaseBusiness },
+            { stage: 4 as PipelineStage, label: 'Builder', icon: FileText },
+          ].map(({ stage, label, icon: Icon }) => (
+            <button
+              key={stage}
+              type="button"
+              onClick={() => setCurrentStage(stage)}
+              className={`flex shrink-0 items-center gap-2 rounded-full border px-3 py-2 text-xs font-medium ${
+                currentStage === stage
+                  ? 'border-violet-200 bg-violet-50 text-violet-700'
+                  : 'border-gray-200 bg-white text-gray-500'
+              }`}
+            >
+              <Icon className="h-3.5 w-3.5" /> {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Main Stage View Area */}
+        <main className="min-w-0 flex-1 px-4 py-6 sm:px-6 lg:px-8">
         {/* Separate administrative workspace from candidate-facing workflow. */}
         {isAdmin && (
-          <section className="no-print mb-6 rounded-2xl border border-amber-500/30 bg-gradient-to-br from-amber-950/40 via-stone-900 to-stone-950 p-5 shadow-lg">
+          <section className="no-print mb-6 rounded-2xl border border-violet-200 bg-white p-5 shadow-sm">
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
               <div className="flex items-start gap-3">
-                <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 p-2.5 text-amber-300">
+                <div className="rounded-xl border border-violet-200 bg-violet-50 p-2.5 text-violet-600">
                   <ShieldCheck className="h-5 w-5" />
                 </div>
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="text-sm font-semibold text-amber-100">Administrator Workspace</h2>
-                    <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-mono text-emerald-300">
+                    <h2 className="text-sm font-semibold text-gray-900">Administrator Workspace</h2>
+                    <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-mono text-emerald-700">
                       UNLIMITED ACCESS
                     </span>
                   </div>
-                  <p className="mt-1 text-xs text-stone-400">
+                  <p className="mt-1 text-xs text-gray-500">
                     Platform operations are separated from the candidate workflow. Review persistence and AI provider configuration here.
                   </p>
                 </div>
@@ -968,17 +1081,17 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setDbModalOpen(true)}
-                  className="inline-flex items-center gap-2 rounded-lg border border-stone-700 bg-stone-950/80 px-3 py-2 text-xs font-medium text-stone-200 transition hover:border-amber-400/50 hover:text-amber-200"
+                  className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-700 transition hover:border-violet-300 hover:text-violet-700"
                 >
-                  <Database className="h-3.5 w-3.5 text-amber-300" />
+                  <Database className="h-3.5 w-3.5 text-violet-600" />
                   Database
                 </button>
                 <button
                   type="button"
                   onClick={() => setAiModalOpen(true)}
-                  className="inline-flex items-center gap-2 rounded-lg border border-stone-700 bg-stone-950/80 px-3 py-2 text-xs font-medium text-stone-200 transition hover:border-amber-400/50 hover:text-amber-200"
+                  className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-700 transition hover:border-violet-300 hover:text-violet-700"
                 >
-                  <Settings2 className="h-3.5 w-3.5 text-amber-300" />
+                  <Settings2 className="h-3.5 w-3.5 text-violet-600" />
                   AI Configuration
                 </button>
               </div>
@@ -990,7 +1103,7 @@ export default function App() {
           <Layers className="h-3.5 w-3.5 text-amber-400" />
           <span>User Workspace · Resume and Job Matching</span>
         </div>
-        <ResumeAnalyzer aiConfig={aiConfig} />
+        <div id="resume-analyzer"><ResumeAnalyzer aiConfig={aiConfig} /></div>
         {currentStage === 1 && (
           <ExperienceParserView
             profileData={profileData}
@@ -1114,7 +1227,8 @@ export default function App() {
             ))}
           </div>
         </section>
-      </main>
+        </main>
+      </div>
 
       {/* Footer */}
       <footer className="no-print border-t border-stone-800 bg-stone-900 py-4 mt-8 text-xs text-stone-500">

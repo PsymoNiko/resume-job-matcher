@@ -16,6 +16,8 @@ import {
   Sparkles,
   Sliders,
   ChevronDown
+  ,Moon
+  ,Sun
 } from 'lucide-react';
 import { 
   PipelineStage, 
@@ -49,6 +51,8 @@ interface PipelineFlowHeaderProps {
   onOpenExperienceModal?: () => void;
   onOpenBillingModal?: () => void;
   onSignOut?: () => void;
+  theme?: 'light' | 'dark';
+  onToggleTheme?: () => void;
 }
 
 export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
@@ -71,6 +75,8 @@ export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
   onOpenExperienceModal,
   onOpenBillingModal,
   onSignOut,
+  theme = 'light',
+  onToggleTheme,
 }) => {
   const [userMenuOpen, setUserMenuOpen] = useState(false);
 
@@ -118,9 +124,9 @@ export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
   const aiBadge = getProviderBadge();
 
   return (
-    <header className="no-print bg-stone-900 border-b border-stone-800 text-stone-200">
+    <header className="app-header no-print bg-stone-900 border-b border-stone-800 text-stone-200">
       {/* Top Banner */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 border-b border-stone-800/80">
+      <div className="app-header-top max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 border-b border-stone-800/80">
         <div className="flex items-center gap-3">
           <div className="h-9 w-9 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
             <Cpu className="w-5 h-5" />
@@ -141,7 +147,7 @@ export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
         </div>
 
         {/* User Account & Experience DB & Action Controls */}
-        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-end">
+        <div className="app-header-controls flex flex-wrap items-center gap-2 w-full md:w-auto justify-end">
           {/* Telegram DWApp Connection Badge */}
           {dwappState && (
             <TelegramBadge
@@ -287,6 +293,17 @@ export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
           </div>
 
           <button
+            type="button"
+            onClick={onToggleTheme}
+            className="theme-toggle inline-flex items-center gap-1.5 rounded-md border border-stone-800 bg-stone-950 px-2.5 py-1.5 text-xs font-medium text-stone-300 transition-colors hover:bg-stone-800"
+            title={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}
+            aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}
+          >
+            {theme === 'light' ? <Moon className="h-3.5 w-3.5" /> : <Sun className="h-3.5 w-3.5" />}
+            <span className="hidden sm:inline">{theme === 'light' ? 'Dark' : 'Light'}</span>
+          </button>
+
+          <button
             id="btn-run-autonomous"
             onClick={onRunAutonomous}
             disabled={isAutonomousRunning}
@@ -322,8 +339,8 @@ export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
       </div>
 
       {/* 4-Stage Architectural Pipeline Steps */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3">
-        <nav aria-label="Pipeline Stages" className="grid grid-cols-2 md:grid-cols-4 gap-2 sm:gap-3">
+      <div className="app-stage-wrap max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3">
+        <nav aria-label="Pipeline Stages" className="app-stage-nav grid grid-cols-2 md:grid-cols-4 gap-2 sm:gap-3">
           {stageDefs.map((def) => {
             const Icon = def.icon;
             const status = stagesStatus[def.stage]?.status || 'pending';
@@ -336,7 +353,7 @@ export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
                 key={def.stage}
                 id={`stage-tab-${def.stage}`}
                 onClick={() => onSelectStage(def.stage)}
-                className={`relative flex items-center gap-3 p-2.5 sm:p-3 rounded-lg border text-left transition-all ${
+                className={`app-stage-tab relative flex items-center gap-3 p-2.5 sm:p-3 rounded-lg border text-left transition-all ${
                   isActive
                     ? 'bg-stone-800 border-amber-500/60 shadow-sm ring-1 ring-amber-500/30 text-stone-100'
                     : isCompleted

@@ -3,10 +3,223 @@
 @layer base {
   body {
     font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #f7f7fb;
+    color: #1f2937;
   }
 
   code, pre, .font-mono {
     font-family: 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+
+}
+
+@layer utilities {
+  .dashboard-shell {
+    background: #f7f7fb;
+    color: #1f2937;
+  }
+
+  .dashboard-grid {
+    background-image: radial-gradient(rgba(124, 58, 237, 0.08) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+
+  .dashboard-sidebar {
+    background: rgba(255, 255, 255, 0.88);
+    border-right: 1px solid #e5e7eb;
+  }
+
+  .dashboard-shell header {
+    background: rgba(255, 255, 255, 0.92) !important;
+    border-color: #e5e7eb !important;
+    color: #374151 !important;
+    backdrop-filter: blur(14px);
+  }
+
+  .dashboard-shell .bg-stone-950,
+  .dashboard-shell .bg-stone-900,
+  .dashboard-shell .bg-stone-950\/70,
+  .dashboard-shell .bg-stone-900\/90 {
+    background-color: rgba(255, 255, 255, 0.92) !important;
+  }
+
+  .dashboard-shell .text-stone-100,
+  .dashboard-shell .text-stone-200,
+  .dashboard-shell .text-stone-300 {
+    color: #1f2937 !important;
+  }
+
+  .dashboard-shell .text-stone-400,
+  .dashboard-shell .text-stone-500 {
+    color: #6b7280 !important;
+  }
+
+  .dashboard-shell .border-stone-800,
+  .dashboard-shell .border-stone-700 {
+    border-color: #e5e7eb !important;
+  }
+
+  .dashboard-shell.theme-dark {
+    background: #0b1020;
+    color: #e5e7eb;
+  }
+
+  .dashboard-shell.theme-dark .dashboard-sidebar {
+    background: rgba(15, 23, 42, 0.96);
+    border-color: #1f2937;
+  }
+
+  .dashboard-shell.theme-dark header {
+    background: rgba(15, 23, 42, 0.96) !important;
+    border-color: #1f2937 !important;
+    color: #e5e7eb !important;
+  }
+
+  .dashboard-shell.theme-dark .bg-stone-950,
+  .dashboard-shell.theme-dark .bg-stone-900,
+  .dashboard-shell.theme-dark .bg-stone-950\/70,
+  .dashboard-shell.theme-dark .bg-stone-900\/90 {
+    background-color: rgba(15, 23, 42, 0.94) !important;
+  }
+
+  .dashboard-shell.theme-dark .text-stone-100,
+  .dashboard-shell.theme-dark .text-stone-200,
+  .dashboard-shell.theme-dark .text-stone-300 {
+    color: #e5e7eb !important;
+  }
+
+  .dashboard-shell.theme-dark .text-stone-400,
+  .dashboard-shell.theme-dark .text-stone-500 {
+    color: #94a3b8 !important;
+  }
+
+  .dashboard-shell.theme-dark .border-stone-800,
+  .dashboard-shell.theme-dark .border-stone-700 {
+    border-color: #334155 !important;
+  }
+
+  .dashboard-shell.theme-dark .dashboard-mobile-nav {
+    background: rgba(15, 23, 42, 0.96);
+    border-color: #1f2937;
+  }
+
+  .dashboard-shell button {
+    transition: transform 180ms ease, box-shadow 180ms ease, background-color 180ms ease, border-color 180ms ease;
+  }
+
+  .dashboard-shell button:hover:not(:disabled) {
+    transform: translateY(-1px);
+  }
+
+  .dashboard-mobile-nav {
+    display: none;
+  }
+
+  .dashboard-shell main > * {
+    animation: dashboard-enter 420ms ease both;
+  }
+
+  @keyframes dashboard-enter {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .dashboard-shell *,
+    .dashboard-shell main > * {
+      animation: none !important;
+      transition: none !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
+  @media (max-width: 767px) {
+    .app-header-top {
+      padding: 0.75rem 1rem !important;
+      gap: 0.65rem !important;
+    }
+
+    .app-header-top > div:first-child {
+      width: 100%;
+    }
+
+    .app-header-top h1 {
+      font-size: 0.9rem;
+    }
+
+    .app-header-top p,
+    .app-header-top h1 + span,
+    .app-header-controls > button[id^="btn-header-"],
+    .app-header-controls > .relative,
+    #btn-reset-pipeline {
+      display: none !important;
+    }
+
+    .app-header-controls {
+      width: 100% !important;
+      justify-content: space-between !important;
+      gap: 0.5rem !important;
+    }
+
+    .app-header-controls #btn-run-autonomous {
+      width: 100%;
+      justify-content: center;
+      min-height: 2.5rem;
+      border-radius: 0.8rem;
+    }
+
+    .app-stage-wrap {
+      padding: 0.65rem 0.75rem !important;
+      overflow: hidden;
+    }
+
+    .app-stage-nav {
+      display: flex !important;
+      gap: 0.5rem !important;
+      overflow-x: auto;
+      padding-bottom: 0.2rem;
+      scrollbar-width: none;
+      scroll-snap-type: x proximity;
+    }
+
+    .app-stage-nav::-webkit-scrollbar {
+      display: none;
+    }
+
+    .app-stage-tab {
+      min-width: 8.6rem;
+      min-height: 3rem;
+      padding: 0.65rem 0.75rem !important;
+      gap: 0.6rem !important;
+      border-radius: 0.8rem !important;
+      scroll-snap-align: start;
+    }
+
+    .app-stage-tab > div:first-child {
+      width: 1.9rem;
+      height: 1.9rem;
+    }
+
+    .app-stage-tab > div:last-of-type span:last-child {
+      display: none;
+    }
+
+    .app-stage-tab > div:last-of-type span:first-child {
+      font-size: 0.68rem;
+    }
+
+    .dashboard-shell main {
+      padding: 1rem 0.75rem !important;
+    }
+
+    .dashboard-shell main > section,
+    .dashboard-shell main > div > section {
+      border-radius: 1rem;
+    }
+
+    .dashboard-shell .dashboard-mobile-nav {
+      display: none !important;
+    }
   }
 }
 
@@ -44,4 +257,3 @@
     size: A4 portrait;
   }
 }
-
