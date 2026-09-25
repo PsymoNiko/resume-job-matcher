@@ -12,6 +12,7 @@ const ALLOWED_KEYS = new Set([
   'TON_DAILY_PASS_TON', 'ADMIN_EMAIL', 'TELEGRAM_BOT_TOKEN',
 ]);
 
+/** Read persisted admin settings, using an empty configuration when absent. */
 function load(): Record<string, string> {
   try {
     return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
@@ -20,22 +21,26 @@ function load(): Record<string, string> {
   }
 }
 
+/** Persist admin settings with owner-only file permissions. */
 function save(config: Record<string, string>) {
   fs.mkdirSync(path.dirname(CONFIG_FILE), { recursive: true });
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), { mode: 0o600 });
 }
 
+/** Compare a supplied secret with the configured administrator secret. */
 export function isAdminSecretValid(secret?: string) {
   const configured = process.env.ADMIN_SECRET_KEY?.trim();
   return Boolean(configured && secret && secret === configured);
 }
 
+/** Apply stored allowlisted settings to the process environment. */
 export function applyAdminConfig() {
   for (const [key, value] of Object.entries(load())) {
     if (ALLOWED_KEYS.has(key) && value) process.env[key] = value;
   }
 }
 
+/** Return effective settings while masking configured secret values. */
 export function getAdminConfig() {
   const stored = load();
   const config: Record<string, string | boolean> = {};
@@ -46,6 +51,7 @@ export function getAdminConfig() {
   return config;
 }
 
+/** Save nonempty allowlisted settings and return their masked effective values. */
 export function updateAdminConfig(input: Record<string, unknown>) {
   const current = load();
   for (const [key, rawValue] of Object.entries(input)) {

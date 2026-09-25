@@ -26,6 +26,7 @@ interface AIModelSettingsModalProps {
   adminUserId?: string;
 }
 
+/** Configure AI providers, models, and administrator provider access. */
 export const AIModelSettingsModal: React.FC<AIModelSettingsModalProps> = ({
   isOpen,
   onClose,
@@ -111,6 +112,7 @@ export const AIModelSettingsModal: React.FC<AIModelSettingsModalProps> = ({
   const filteredModels = availableModels.filter((m) => m.provider === provider);
   const isSelfHosted = provider === 'self_hosted' || provider === 'custom_openai' || provider === 'agentrouter' || provider === 'custom';
 
+  /** Select a provider and its default model and endpoint settings. */
   const handleProviderChange = (newProvider: AIProvider) => {
     setProvider(newProvider);
     setTestResult(null);
@@ -158,6 +160,7 @@ export const AIModelSettingsModal: React.FC<AIModelSettingsModalProps> = ({
     }
   };
 
+  /** Save the selected model configuration and close the modal. */
   const handleSave = () => {
     onSaveConfig({
       provider,
@@ -169,6 +172,7 @@ export const AIModelSettingsModal: React.FC<AIModelSettingsModalProps> = ({
     onClose();
   };
 
+  /** Toggle a provider in the administrator's pending access selection. */
   const toggleProvider = (providerId: string) => {
     setProviderSaveError(null);
     setEnabledProviders((current) => (
@@ -178,6 +182,7 @@ export const AIModelSettingsModal: React.FC<AIModelSettingsModalProps> = ({
     ));
   };
 
+  /** Persist the enabled provider list through the admin configuration API. */
   const saveProviderAccess = async () => {
     if (!isAdmin || !adminUserId || enabledProviders.length === 0) {
       setProviderSaveError('Keep at least one AI provider enabled.');

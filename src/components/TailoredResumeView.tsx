@@ -35,6 +35,7 @@ interface TailoredResumeViewProps {
   }) => Promise<void>;
 }
 
+/** Show the tailored resume and its copy, print, and download actions. */
 export const TailoredResumeView: React.FC<TailoredResumeViewProps> = ({
   masterProfile,
   matchAnalysis,
@@ -121,6 +122,7 @@ export const TailoredResumeView: React.FC<TailoredResumeViewProps> = ({
     URL.revokeObjectURL(url);
   };
 
+  /** Export the resume using the selected PDF language. */
   const handleDownloadPDF = async () => {
     if (!resume) return;
     const filename = `${(contactName || 'developer').toLowerCase().replace(/\s+/g, '_')}_ats_resume.pdf`;

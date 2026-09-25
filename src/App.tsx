@@ -43,6 +43,7 @@ import {
   AlertCircle
 } from 'lucide-react';
 
+/** Coordinate account state, resume review, and the four-stage matching flow. */
 export default function App() {
   // Current active stage view
   const [currentStage, setCurrentStage] = useState<PipelineStage>(1);
@@ -304,6 +305,7 @@ export default function App() {
     addLog(1, 'Experience removed from database.', 'info');
   };
 
+  /** Enhance a saved experience with its linked repository context. */
   const handleAIUpdateExperience = async (id: string, userPrompt: string) => {
     const token = localStorage.getItem('resume_job_matcher_auth_token') || 'guest';
     const experience = experiences.find((item) => item.id === id);
@@ -330,6 +332,7 @@ export default function App() {
     addLog(1, 'Experience updated and rewritten with AI assistance.', 'success');
   };
 
+  /** Convert extracted repositories into saved experience entries. */
   const handleSyncGitHubExperiences = async () => {
     if (!profileData?.repositories || profileData.repositories.length === 0) {
       throw new Error('No extracted GitHub repositories found to sync.');
@@ -900,6 +903,7 @@ export default function App() {
   };
 
   // Reset Pipeline
+  /** Restore the pipeline to its initial sample profile and stage. */
   const handleReset = () => {
     setProfileData(SAMPLE_PROFILES[0].profile);
     setMasterProfile(null);

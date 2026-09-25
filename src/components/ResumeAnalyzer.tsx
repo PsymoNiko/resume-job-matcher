@@ -6,6 +6,7 @@ interface ResumeAnalyzerProps {
   aiConfig: AIConfigSettings;
 }
 
+/** Manage resume upload, line choices, coaching chat, and regeneration. */
 export function ResumeAnalyzer({ aiConfig }: ResumeAnalyzerProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -20,6 +21,7 @@ export function ResumeAnalyzer({ aiConfig }: ResumeAnalyzerProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
 
+  /** Validate an uploaded resume and clear results from the previous file. */
   const handleFile = (nextFile?: File) => {
     if (!nextFile) return;
     setError('');
@@ -42,6 +44,7 @@ export function ResumeAnalyzer({ aiConfig }: ResumeAnalyzerProps) {
     setFile(nextFile);
   };
 
+  /** Encode the selected document and request structured resume analysis. */
   const analyze = async () => {
     if (!file) {
       setError('Choose a resume file first.');
@@ -80,10 +83,12 @@ export function ResumeAnalyzer({ aiConfig }: ResumeAnalyzerProps) {
     }
   };
 
+  /** Record which version of a suggested line the user wants to keep. */
   const chooseLine = (line: ResumeLineEdit, choice: 'current' | 'suggested') => {
     setDecisions((previous) => ({ ...previous, [line.line_number]: choice }));
   };
 
+  /** Send the next question with resume context and conversation history. */
   const sendChat = async () => {
     const content = chatInput.trim();
     if (!content || !sourceText || isChatLoading) return;
@@ -107,6 +112,7 @@ export function ResumeAnalyzer({ aiConfig }: ResumeAnalyzerProps) {
     }
   };
 
+  /** Apply selected edits only when their source line still matches. */
   const getResolvedResume = () => {
     const lines = sourceText.split(/\r?\n/);
     (analysis?.line_edits || []).forEach((edit) => {
@@ -117,10 +123,12 @@ export function ResumeAnalyzer({ aiConfig }: ResumeAnalyzerProps) {
     return lines.join('\n');
   };
 
+  /** Copy the resume text after applying the user's line choices. */
   const copyResolvedResume = async () => {
     await navigator.clipboard.writeText(getResolvedResume());
   };
 
+  /** Request a complete rewrite of the selected resume draft. */
   const regenerate = async () => {
     if (!analysis || !sourceText || isRegenerating) return;
     setIsRegenerating(true);
@@ -141,6 +149,7 @@ export function ResumeAnalyzer({ aiConfig }: ResumeAnalyzerProps) {
     }
   };
 
+  /** Download the regenerated resume in Markdown or plain text. */
   const downloadRegenerated = (format: 'md' | 'txt') => {
     if (!regeneratedResume) return;
     const content = format === 'md' ? regeneratedResume.markdown : regeneratedResume.plain_text;
@@ -318,6 +327,7 @@ export function ResumeAnalyzer({ aiConfig }: ResumeAnalyzerProps) {
   );
 }
 
+/** Render one selectable version of a resume line. */
 function LineChoice({ label, value, selected, tone, onClick }: { label: string; value: string; selected: boolean; tone: 'red' | 'green'; onClick: () => void }) {
   return (
     <button type="button" onClick={onClick} className={`border-l-4 p-3 text-left transition ${tone === 'red' ? 'border-red-300 bg-red-50/60 hover:bg-red-100' : 'border-emerald-300 bg-emerald-50/60 hover:bg-emerald-100'} ${selected ? 'ring-2 ring-inset ring-amber-500' : ''}`}>
@@ -327,6 +337,7 @@ function LineChoice({ label, value, selected, tone, onClick }: { label: string; 
   );
 }
 
+/** Render a titled list of resume review findings. */
 function ReviewList({ title, items, icon }: { title: string; items: string[]; icon: React.ReactNode }) {
   return (
     <div className="rounded-xl border border-stone-200 bg-white p-4">

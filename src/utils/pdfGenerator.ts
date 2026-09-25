@@ -30,6 +30,7 @@ const PDF_LABELS: Record<PDFLanguage, Record<string, string>> = {
   },
 };
 
+/** Encode font bytes for jsPDF's virtual file system. */
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   let binary = '';
   const bytes = new Uint8Array(buffer);
@@ -40,6 +41,7 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
+/** Load the font pair needed for the requested PDF language. */
 async function loadPdfFonts(doc: jsPDF, language: PDFLanguage) {
   const regularFont = language === 'fa' ? '/fonts/NotoNaskhArabic-Regular.ttf' : '/fonts/NotoSans-Regular.ttf';
   const boldFont = language === 'fa' ? regularFont : '/fonts/NotoSans-Bold.ttf';
@@ -62,6 +64,7 @@ async function loadPdfFonts(doc: jsPDF, language: PDFLanguage) {
   if (language === 'fa') doc.setR2L(true);
 }
 
+/** Render and download an ATS resume PDF in the selected language. */
 export async function generateATSPDF(
   resume: ATSResume,
   filename = 'tailored_ats_resume.pdf',
@@ -81,7 +84,9 @@ export async function generateATSPDF(
   let y = 18;
   const labels = PDF_LABELS[language];
   const rtl = language === 'fa';
+  /** Shape text for Persian while leaving other languages unchanged. */
   const renderText = (text: string) => rtl ? doc.processArabic(text) : text;
+  /** Mirror a text position across the page for right-to-left rendering. */
   const textX = (text: string, x: number) => rtl ? pageWidth - x : x;
   const align = rtl ? 'right' as const : 'left' as const;
 
@@ -135,6 +140,7 @@ export async function generateATSPDF(
   y += 6;
 
   // Helper for Section Headings
+  /** Draw a section heading and its divider, adding a page if needed. */
   const renderSectionHeader = (title: string) => {
     checkPageBreak(14);
     doc.setFont('helvetica', 'bold');
@@ -149,6 +155,7 @@ export async function generateATSPDF(
   };
 
   // Helper for Body Paragraph
+  /** Wrap and render body text within the available page width. */
   const renderParagraph = (text: string, fontSize = 9.5, lineHeight = 4.2) => {
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(fontSize);
@@ -163,6 +170,7 @@ export async function generateATSPDF(
   };
 
   // Helper for Bullet Point
+  /** Wrap and render an indented bullet across page breaks. */
   const renderBullet = (text: string, indent = 4) => {
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(9);

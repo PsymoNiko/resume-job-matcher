@@ -41,6 +41,7 @@ export interface AIExecutionOptions {
   timeoutMs?: number;
 }
 
+/** POST to an OpenAI-compatible endpoint with timeout and optional TLS override. */
 async function postOpenAICompatible(
   endpoint: string,
   headers: Record<string, string>,
@@ -217,6 +218,7 @@ function getGenAI(customKey?: string) {
   return new GoogleGenAI({ apiKey });
 }
 
+/** Parse JSON from an AI response, removing fences and repairable trailing commas. */
 function cleanJsonResponse(rawText: string): any {
   let cleaned = rawText.trim();
   if (cleaned.startsWith('```json')) {
@@ -1290,6 +1292,7 @@ export function buildHeuristicJobExtraction(
   };
 }
 
+/** Extract structured job details from source text with heuristic fallback. */
 export async function analyzeJobSourceText(
   sourceText: string,
   sourceMeta: {
@@ -1366,6 +1369,7 @@ Headline: ${candidateProfile?.headline || ''}`;
   }
 }
 
+/** Analyze a resume and return structured feedback or a heuristic fallback. */
 export async function analyzeResumeText(
   sourceText: string,
   fileName: string,
@@ -1430,6 +1434,7 @@ ${sourceText.slice(0, 30000)}`;
   }
 }
 
+/** Answer a question using the resume and the most recent conversation turns. */
 export async function chatAboutResume(
   resumeText: string,
   messages: { role: 'user' | 'assistant'; content: string }[],
@@ -1453,6 +1458,7 @@ ${conversation}`;
   return result.text.trim();
 }
 
+/** Rewrite the selected resume draft as validated Markdown and plain text. */
 export async function regenerateResumeText(
   selectedResumeText: string,
   ai_config?: AIConfigSettings

@@ -51,6 +51,7 @@ interface PipelineFlowHeaderProps {
   onSignOut?: () => void;
 }
 
+/** Render stage navigation and the current account, quota, and AI status. */
 export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
   currentStage,
   onSelectStage,
@@ -101,6 +102,7 @@ export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
     },
   ];
 
+  /** Reduce the active provider and model to a compact header badge. */
   const getProviderBadge = () => {
     const prov = currentAiConfig?.provider || 'deepseek';
     const model = currentAiConfig?.model || 'deepseek-chat';

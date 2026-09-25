@@ -53,6 +53,7 @@ const mainKeyboard = {
   input_field_placeholder: 'Choose an action or type a command',
 };
 
+/** Call a Telegram Bot API method and return its result or a useful error. */
 async function telegramApi<T>(token: string, method: string, body?: Record<string, unknown>): Promise<T> {
   let response: Response;
   try {
@@ -73,6 +74,7 @@ async function telegramApi<T>(token: string, method: string, body?: Record<strin
   return payload.result as T;
 }
 
+/** Send text in chunks that fit Telegram's message length limit. */
 async function sendMessage(token: string, chatId: number, text: string, replyMarkup?: unknown) {
   const chunks = text.match(/[\s\S]{1,3900}/g) || [''];
   for (const chunk of chunks) {
@@ -84,6 +86,7 @@ async function sendMessage(token: string, chatId: number, text: string, replyMar
   }
 }
 
+/** Call the local platform API using the Telegram user's identity. */
 async function appApi<T>(path: string, body: Record<string, unknown> | undefined, userId: string): Promise<T> {
   const response = await fetch(`http://127.0.0.1:${process.env.PORT || 3000}${path}`, {
     method: body ? 'POST' : 'GET',
@@ -95,6 +98,7 @@ async function appApi<T>(path: string, body: Record<string, unknown> | undefined
   return data;
 }
 
+/** Reuse or initialize the in-memory workflow state for a chat. */
 function getSession(chatId: number, userId = String(chatId)): BotSession {
   const existing = sessions.get(chatId);
   if (existing) return existing;
@@ -103,10 +107,12 @@ function getSession(chatId: number, userId = String(chatId)): BotSession {
   return created;
 }
 
+/** Acknowledge an inline keyboard callback to clear Telegram's loading state. */
 async function answerCallback(token: string, callbackId: string) {
   await telegramApi(token, 'answerCallbackQuery', { callback_query_id: callbackId });
 }
 
+/** Download a Telegram document, enforcing the resume upload size limit. */
 async function downloadTelegramFile(token: string, fileId: string): Promise<Buffer> {
   const file = await telegramApi<{ file_path?: string }>(token, 'getFile', { file_id: fileId });
   if (!file.file_path) throw new Error('Telegram did not return a file path.');
@@ -117,6 +123,7 @@ async function downloadTelegramFile(token: string, fileId: string): Promise<Buff
   return Buffer.from(bytes);
 }
 
+/** Apply confirmed line choices to the original resume text. */
 function selectedResumeText(session: BotSession) {
   const lines = (session.resumeText || '').split(/\r?\n/);
   for (const edit of session.analysis?.line_edits || []) {
@@ -128,6 +135,7 @@ function selectedResumeText(session: BotSession) {
   return lines.join('\n');
 }
 
+/** Build inline controls for each suggested resume line edit. */
 function lineKeyboard(session: BotSession) {
   return {
     inline_keyboard: (session.analysis?.line_edits || []).slice(0, 12).map((edit) => [
@@ -145,6 +153,7 @@ function lineKeyboard(session: BotSession) {
   };
 }
 
+/** Format analysis and line edits for a Telegram message. */
 function reviewText(session: BotSession) {
   const edits = (session.analysis?.line_edits || []).slice(0, 12);
   const lines = edits.length
@@ -153,6 +162,7 @@ function reviewText(session: BotSession) {
   return `Resume review: ${session.fileName || 'resume'}\nScore: ${session.analysis?.overall_score || 0}/100\n\n${session.analysis?.summary || ''}\n\nLine choices:\n${lines}`;
 }
 
+/** Describe the commands and document upload flow available in the bot. */
 function workflowHelp() {
   return `Platform commands:
 /resume - upload and review a resume
@@ -177,6 +187,7 @@ function workflowHelp() {
 You can also upload a document after /resume or /job.`;
 }
 
+/** Dispatch a Telegram update through the current chat workflow. */
 async function handleUpdate(token: string, update: TelegramUpdate) {
   const callback = update.callback_query;
   if (callback?.message?.chat.id) {
@@ -440,6 +451,7 @@ async function handleUpdate(token: string, update: TelegramUpdate) {
   }
 }
 
+/** Register the command menu and start Telegram polling when configured. */
 export function startTelegramBot() {
   const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
   if (!token) {
@@ -465,6 +477,7 @@ export function startTelegramBot() {
   }).catch((error: any) => console.error(`[Telegram Bot] Command menu setup failed: ${error.message}`));
 }
 
+/** Fetch and process Telegram updates continuously with retry delays. */
 async function pollTelegram(token: string) {
   let offset = 0;
   console.log('[Telegram Bot] Long polling enabled.');

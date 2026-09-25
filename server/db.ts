@@ -557,6 +557,7 @@ export const db = {
     return newExp;
   },
 
+  /** Add valid experience items to the front of a user's saved list. */
   bulkAddExperiences(userId: string, items: Array<Omit<UserExperienceItem, 'id' | 'user_id' | 'updated_at'>>): UserExperienceItem[] {
     const list = this.getUserExperiences(userId);
     const newItems: UserExperienceItem[] = items
@@ -670,7 +671,7 @@ export const db = {
     return list;
   },
 
-  // AI-assisted experience updater based on natural language user request
+  /** Rewrite a saved experience using the user's request and repository context. */
   async updateExperienceWithAI(
     userId: string,
     expId: string,

@@ -42,6 +42,7 @@ const PORT = 3000;
 
 app.use(express.json({ limit: '15mb' }));
 
+/** Accept requests authenticated by the admin secret or an admin user account. */
 function isAdminRequest(req: express.Request): boolean {
   const userId = req.headers['x-user-id'] as string | undefined;
   return isAdminSecretValid(req.headers['x-admin-secret'] as string)
@@ -381,6 +382,7 @@ app.post('/api/user/experiences/sync-github', (req, res) => {
   }
 });
 
+/** Update an experience from either supported AI enhancement route shape. */
 async function handleAIExperienceUpdate(req: express.Request, res: express.Response) {
   try {
     const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
@@ -1196,6 +1198,7 @@ ${JSON.stringify(match_analysis, null, 2)}`;
   }
 });
 
+/** Attach the production or development frontend and start the API and bot. */
 async function startServer() {
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
