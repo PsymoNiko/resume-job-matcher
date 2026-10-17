@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
+import { TonConnectUI } from '@tonconnect/ui';
 import { 
   X, 
   Mail, 
@@ -11,6 +12,7 @@ import {
   ArrowRight,
   Loader2,
   KeyRound
+  ,WalletCards
 } from 'lucide-react';
 import { UserAccount, UserProfileInfo, AuthProviderType } from '../types';
 
@@ -35,6 +37,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [githubUsername, setGithubUsername] = useState('');
+  const [walletAddress, setWalletAddress] = useState('');
+  const [walletConnecting, setWalletConnecting] = useState(false);
+  const tonConnectRef = useRef<TonConnectUI | null>(null);
   
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -61,6 +66,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setErrorMessage('Password must be at least 6 characters.');
       return;
     }
+    if (authMode === 'register' && walletAddress.trim().length < 20) {
+      setErrorMessage('Connect or enter a valid TON wallet address to create your profile.');
+      return;
+    }
 
     setIsLoading(true);
     try {
@@ -74,6 +83,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           password,
           auth_provider: 'email',
           github_username: githubUsername.trim() || undefined,
+          ton_wallet_address: authMode === 'register' ? walletAddress.trim() : undefined,
         }),
       });
 
@@ -104,6 +114,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setIsLoading(true);
 
     try {
+      if (walletAddress.trim().length < 20) {
+        throw new Error('Connect or enter a TON wallet address before using social registration.');
+      }
       let targetEmail = email;
       let targetName = name;
       let targetGithub = githubUsername;
@@ -130,6 +143,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           name: targetName,
           github_username: targetGithub,
           avatar_url: targetAvatar,
+          ton_wallet_address: walletAddress.trim(),
         }),
       });
 
@@ -151,6 +165,26 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setErrorMessage(err.message || 'Social sign-in failed.');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleConnectWallet = async () => {
+    setErrorMessage(null);
+    setWalletConnecting(true);
+    try {
+      const tonConnect = tonConnectRef.current || new TonConnectUI({
+        manifestUrl: `${window.location.origin}/tonconnect-manifest.json`,
+      });
+      tonConnectRef.current = tonConnect;
+      const wallet = await tonConnect.connectWallet();
+      setWalletAddress(wallet.account.address);
+      setSuccessMessage('TON wallet connected. Complete registration to create your profile.');
+    } catch (err: any) {
+      if (err?.message !== 'User rejected the operation') {
+        setErrorMessage(err?.message || 'Unable to connect a TON wallet.');
+      }
+    } finally {
+      setWalletConnecting(false);
     }
   };
 
@@ -251,6 +285,36 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <span>Gmail / Google</span>
             </button>
           </div>
+
+          {authMode === 'register' && (
+            <div className="rounded-xl border border-cyan-500/25 bg-cyan-500/10 p-3">
+              <label className="mb-1.5 flex items-center gap-2 text-xs font-medium text-cyan-200">
+                <WalletCards className="h-4 w-4" />
+                TON wallet required for your profile
+              </label>
+              <input
+                type="text"
+                required
+                id="input-auth-wallet"
+                value={walletAddress}
+                onChange={(e) => setWalletAddress(e.target.value)}
+                placeholder="EQ... or UQ..."
+                className="w-full rounded-lg border border-cyan-500/30 bg-stone-950 px-3 py-2 font-mono text-xs text-stone-100 focus:border-cyan-400 focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={handleConnectWallet}
+                disabled={walletConnecting}
+                className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-cyan-400/40 bg-cyan-400/10 px-3 py-2 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-400/20 disabled:cursor-wait disabled:opacity-60"
+              >
+                <WalletCards className="h-3.5 w-3.5" />
+                {walletConnecting ? 'Opening wallet…' : walletAddress ? 'Reconnect TON wallet' : 'Connect TON wallet'}
+              </button>
+              <p className="mt-1.5 text-[11px] text-cyan-100/70">
+                Your wallet identifies your account. It is stored with your profile and is not used to move funds.
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Divider */}

@@ -193,45 +193,6 @@ export const PipelineFlowHeader: React.FC<PipelineFlowHeaderProps> = ({
             </button>
           )}
 
-          {/* Experience DB Shortcut */}
-          {onOpenExperienceModal && (
-            <button
-              id="btn-header-experiences-db"
-              onClick={onOpenExperienceModal}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-stone-950 hover:bg-stone-800 text-stone-300 border border-stone-800 transition-colors"
-              title="Manage stored GitHub and career experiences in database"
-            >
-              <span>Experiences</span>
-              <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300">
-                {experiencesCount}
-              </span>
-            </button>
-          )}
-
-          {/* Profile Filling Shortcut */}
-          {onOpenProfileModal && (
-            <button
-              id="btn-header-profile-filling"
-              onClick={onOpenProfileModal}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-stone-950 hover:bg-stone-800 text-stone-300 border border-stone-800 transition-colors"
-              title="Fill personal info, phone, email, avatar, and community links"
-            >
-              {userProfile?.avatar_url ? (
-                <img
-                  src={userProfile.avatar_url}
-                  alt="avatar"
-                  className="w-4 h-4 rounded-full object-cover"
-                  referrerPolicy="no-referrer"
-                />
-              ) : (
-                <User className="w-3.5 h-3.5 text-amber-400" />
-              )}
-              <span className="truncate max-w-[110px]">
-                {userProfile?.name ? userProfile.name.split(' ')[0] : 'Profile Info'}
-              </span>
-            </button>
-          )}
-
           {/* Auth Button & Dropdown */}
           <div className="relative">
             {currentUser ? (

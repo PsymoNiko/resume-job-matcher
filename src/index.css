@@ -119,6 +119,16 @@
     animation: dashboard-enter 420ms ease both;
   }
 
+  .journey-3d {
+    background:
+      radial-gradient(circle at 82% 45%, rgba(124, 58, 237, 0.13), transparent 15rem),
+      rgba(255, 255, 255, 0.88);
+  }
+
+  .journey-canvas-wrap {
+    background: radial-gradient(circle, rgba(124, 58, 237, 0.08), transparent 68%);
+  }
+
   @keyframes dashboard-enter {
     from { opacity: 0; transform: translateY(8px); }
     to { opacity: 1; transform: translateY(0); }

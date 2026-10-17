@@ -137,9 +137,12 @@ app.post('/api/ai/test-connection', async (req, res) => {
 // Authentication Routes (Email, GitHub, Google/Gmail)
 app.post('/api/auth/register', (req, res) => {
   try {
-    const { email, name, password, auth_provider = 'email', avatar_url, github_username } = req.body;
+    const { email, name, password, auth_provider = 'email', avatar_url, github_username, ton_wallet_address } = req.body;
     if (!email) {
       return res.status(400).json({ error: 'A valid email is required for registration' });
+    }
+    if (!ton_wallet_address || typeof ton_wallet_address !== 'string' || ton_wallet_address.trim().length < 20) {
+      return res.status(400).json({ error: 'A TON wallet address is required to create a profile.' });
     }
     const user = db.registerUser({
       email,
@@ -148,6 +151,7 @@ app.post('/api/auth/register', (req, res) => {
       auth_provider,
       avatar_url,
       github_username,
+      ton_wallet_address,
     });
     const profile = db.getUserProfile(user.id);
     res.json({ user, profile });
@@ -179,7 +183,10 @@ app.get('/api/auth/me', (req, res) => {
 
 app.post('/api/auth/social-connect', (req, res) => {
   try {
-    const { provider, email, name, avatar_url, github_username } = req.body;
+    const { provider, email, name, avatar_url, github_username, ton_wallet_address } = req.body;
+    if (!ton_wallet_address || typeof ton_wallet_address !== 'string' || ton_wallet_address.trim().length < 20) {
+      return res.status(400).json({ error: 'Connect a TON wallet before creating a profile.' });
+    }
     const finalEmail = email || (github_username ? `${github_username}@users.noreply.github.com` : 'dev@example.com');
     const user = db.registerUser({
       email: finalEmail,
@@ -187,6 +194,7 @@ app.post('/api/auth/social-connect', (req, res) => {
       auth_provider: provider || 'github',
       avatar_url,
       github_username,
+      ton_wallet_address,
     });
     const profile = db.getUserProfile(user.id);
     res.json({ user, profile });
@@ -300,6 +308,10 @@ app.post('/api/ton/admin/reset-quota', (req, res) => {
 // Personal Profile Filling & Management
 app.get('/api/user/profile', (req, res) => {
   const userId = (req.headers['x-user-id'] as string) || 'guest_user_default';
+  const user = db.getUser(userId);
+  if (!user || !user.ton_wallet_address) {
+    return res.status(403).json({ error: 'A registered TON wallet is required before accessing a profile.' });
+  }
   const profile = db.getUserProfile(userId);
   res.json({ profile });
 });
@@ -307,6 +319,10 @@ app.get('/api/user/profile', (req, res) => {
 app.post('/api/user/profile', (req, res) => {
   try {
     const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
+    const user = db.getUser(userId);
+    if (!user || !user.ton_wallet_address) {
+      return res.status(403).json({ error: 'A registered TON wallet is required before creating a profile.' });
+    }
     const updated = db.saveUserProfile(userId, req.body);
     res.json({ profile: updated });
   } catch (err: any) {

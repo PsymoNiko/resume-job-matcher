@@ -396,6 +396,7 @@ export const db = {
     auth_provider: 'email' | 'github' | 'google';
     avatar_url?: string;
     github_username?: string;
+    ton_wallet_address?: string;
   }): UserAccount {
     const normalizedEmail = params.email.trim().toLowerCase();
     const existing = this.findUserByEmail(normalizedEmail);
@@ -405,6 +406,7 @@ export const db = {
         existing.name = params.name || existing.name;
         existing.avatar_url = params.avatar_url || existing.avatar_url;
         if (params.github_username) existing.github_username = params.github_username;
+        if (params.ton_wallet_address) existing.ton_wallet_address = params.ton_wallet_address.trim();
         if (params.password) existing.password = hashPassword(params.password);
         saveDb();
         const { password: _, ...clean } = existing;
@@ -423,6 +425,7 @@ export const db = {
       auth_provider: params.auth_provider,
       avatar_url: params.avatar_url || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(params.name || normalizedEmail)}`,
       github_username: params.github_username,
+      ton_wallet_address: params.ton_wallet_address?.trim(),
       created_at: Date.now(),
     };
 

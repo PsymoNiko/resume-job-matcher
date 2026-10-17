@@ -12,6 +12,7 @@ import { AIModelSettingsModal } from './components/AIModelSettingsModal';
 import { DatabaseSettingsModal } from './components/DatabaseSettingsModal';
 import { TonBillingModal } from './components/TonBillingModal';
 import { ResumeAnalyzer } from './components/ResumeAnalyzer';
+import { Journey3D } from './components/Journey3D';
 import { 
   GitHubProfileData, 
   MasterProfile, 
@@ -937,6 +938,13 @@ export default function App() {
       return next;
     });
   };
+  const openProfile = () => {
+    if (!currentUser || !currentUser.ton_wallet_address) {
+      setAuthModalOpen(true);
+      return;
+    }
+    setProfileModalOpen(true);
+  };
 
   return (
     <div className={`dashboard-shell dashboard-grid ${theme === 'dark' ? 'theme-dark' : ''} min-h-screen text-gray-900 flex flex-col font-sans`}>
@@ -958,7 +966,7 @@ export default function App() {
         onOpenAiModal={isAdmin ? () => setAiModalOpen(true) : undefined}
         onOpenDbModal={isAdmin ? () => setDbModalOpen(true) : undefined}
         onOpenAuthModal={() => setAuthModalOpen(true)}
-        onOpenProfileModal={() => setProfileModalOpen(true)}
+        onOpenProfileModal={openProfile}
         onOpenExperienceModal={() => setExperienceModalOpen(true)}
         onSignOut={handleSignOut}
         theme={theme}
@@ -987,10 +995,8 @@ export default function App() {
                 <LayoutDashboard className="h-4 w-4" /> Dashboard
               </button>
               {[
-                { stage: 1 as PipelineStage, label: 'Resume / GitHub', icon: FileSearch },
-                { stage: 2 as PipelineStage, label: 'AI Analysis', icon: Cpu },
-                { stage: 3 as PipelineStage, label: 'Job Matching', icon: BriefcaseBusiness },
-                { stage: 4 as PipelineStage, label: 'Resume Builder', icon: FileText },
+                { stage: 1 as PipelineStage, label: 'Resumes', icon: FileSearch },
+                { stage: 3 as PipelineStage, label: 'Job Tracker', icon: BriefcaseBusiness },
               ].map(({ stage, label, icon: Icon }) => (
                 <button
                   key={stage}
@@ -1010,10 +1016,17 @@ export default function App() {
               >
                 <MessageSquare className="h-4 w-4" /> AI Chat
               </button>
+              <button
+                type="button"
+                onClick={() => setCurrentStage(4)}
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-xs text-slate-400 transition hover:bg-white/5 hover:text-slate-200"
+              >
+                <FileText className="h-4 w-4" /> Resume Export
+              </button>
             </nav>
             <div className="mt-auto space-y-2 border-t border-slate-800/70 pt-4">
               <div className="px-2 text-[9px] font-semibold uppercase tracking-[0.2em] text-slate-500">Account</div>
-              <button type="button" onClick={() => setProfileModalOpen(true)} className="w-full rounded-lg px-3 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200">
+              <button type="button" onClick={openProfile} className="w-full rounded-lg px-3 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200">
                 Career Profile
               </button>
               {isAdmin && (
@@ -1103,6 +1116,7 @@ export default function App() {
           <Layers className="h-3.5 w-3.5 text-amber-400" />
           <span>User Workspace · Resume and Job Matching</span>
         </div>
+        <Journey3D currentStage={currentStage} onSelectStage={setCurrentStage} />
         <div id="resume-analyzer"><ResumeAnalyzer aiConfig={aiConfig} /></div>
         {currentStage === 1 && (
           <ExperienceParserView

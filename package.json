@@ -15,6 +15,7 @@
     "@google/genai": "^2.4.0",
     "@tailwindcss/vite": "^4.3.3",
     "@tonconnect/ui": "^3.0.2",
+    "@types/three": "^0.186.0",
     "@vitejs/plugin-react": "^6.1.1",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
@@ -25,6 +26,7 @@
     "pg": "^8.23.0",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
+    "three": "^0.186.0",
     "tonweb": "^0.0.66",
     "vite": "^8.3.0"
   },
