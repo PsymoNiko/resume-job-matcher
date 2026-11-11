@@ -11,6 +11,7 @@ import { ExperienceManagerModal } from './components/ExperienceManagerModal';
 import { AIModelSettingsModal } from './components/AIModelSettingsModal';
 import { DatabaseSettingsModal } from './components/DatabaseSettingsModal';
 import { TonBillingModal } from './components/TonBillingModal';
+import { ResumeAnalyzer } from './components/ResumeAnalyzer';
 import { 
   GitHubProfileData, 
   MasterProfile, 
@@ -33,6 +34,8 @@ import {
   Info, 
   ShieldCheck, 
   Cpu, 
+  Database,
+  Settings2,
   Layers, 
   Sparkles,
   ExternalLink,
@@ -40,6 +43,7 @@ import {
   AlertCircle
 } from 'lucide-react';
 
+/** Coordinate account state, resume review, and the four-stage matching flow. */
 export default function App() {
   // Current active stage view
   const [currentStage, setCurrentStage] = useState<PipelineStage>(1);
@@ -135,9 +139,9 @@ export default function App() {
   const [aiConfig, setAiConfig] = useState<AIConfigSettings>(() => {
     try {
       const saved = localStorage.getItem('resume_job_matcher_ai_config');
-      return saved ? JSON.parse(saved) : { provider: 'gemini', model: 'gemini-3.8-flash', temperature: 0.2 };
+      return saved ? JSON.parse(saved) : { provider: 'deepseek', model: 'deepseek-chat', temperature: 0.2 };
     } catch {
-      return { provider: 'gemini', model: 'gemini-3.8-flash', temperature: 0.2 };
+      return { provider: 'deepseek', model: 'deepseek-chat', temperature: 0.2 };
     }
   });
 
@@ -301,15 +305,26 @@ export default function App() {
     addLog(1, 'Experience removed from database.', 'info');
   };
 
+  /** Enhance a saved experience with its linked repository context. */
   const handleAIUpdateExperience = async (id: string, userPrompt: string) => {
     const token = localStorage.getItem('resume_job_matcher_auth_token') || 'guest';
+    const experience = experiences.find((item) => item.id === id);
+    const repository = experience?.repo_url
+      ? profileData?.repositories.find((repo) => repo.html_url === experience.repo_url)
+      : undefined;
+    const repositoryFeature = repository
+      ? [
+          repository.description,
+          repository.readme_snippet ? `README: ${repository.readme_snippet.slice(0, 1800)}` : '',
+        ].filter(Boolean).join('\n\n')
+      : experience?.repository_feature;
     const res = await fetch(`/api/user/experiences/${id}/ai-enhance`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-user-id': token,
       },
-      body: JSON.stringify({ userPrompt, ai_config: aiConfig }),
+      body: JSON.stringify({ userPrompt, ai_config: aiConfig, repository_feature: repositoryFeature }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'AI rewrite failed');
@@ -317,6 +332,7 @@ export default function App() {
     addLog(1, 'Experience updated and rewritten with AI assistance.', 'success');
   };
 
+  /** Convert extracted repositories into saved experience entries. */
   const handleSyncGitHubExperiences = async () => {
     if (!profileData?.repositories || profileData.repositories.length === 0) {
       throw new Error('No extracted GitHub repositories found to sync.');
@@ -330,7 +346,13 @@ export default function App() {
       end_date: 'Present',
       is_current: true,
       tech_stack: Object.keys(repo.languages || {}),
-      bullets: repo.recent_commits?.length ? repo.recent_commits : [repo.description || 'Core maintainer and architect.'],
+      repository_feature: [
+        repo.description,
+        repo.readme_snippet ? `README: ${repo.readme_snippet.slice(0, 1800)}` : '',
+      ].filter(Boolean).join('\n\n') || `Open-source repository developed and maintained by @${profileData.username}.`,
+      bullets: [
+        repo.description || 'Open-source repository developed and maintained by the candidate.',
+      ],
       quantified_impact: [`${repo.stars || 0} GitHub Stars`, `${repo.forks || 0} Forks`],
       repo_url: repo.html_url,
       stars: repo.stars,
@@ -881,6 +903,7 @@ export default function App() {
   };
 
   // Reset Pipeline
+  /** Restore the pipeline to its initial sample profile and stage. */
   const handleReset = () => {
     setProfileData(SAMPLE_PROFILES[0].profile);
     setMasterProfile(null);
@@ -895,6 +918,8 @@ export default function App() {
     });
     addLog(1, 'Pipeline reset to initial default state.', 'info');
   };
+
+  const isAdmin = Boolean(quota?.isAdmin || currentUser?.role === 'admin');
 
   return (
     <div className="min-h-screen bg-stone-950 text-stone-100 flex flex-col font-sans">
@@ -913,8 +938,8 @@ export default function App() {
         dwappState={dwappState}
         quota={quota}
         onOpenBillingModal={() => setBillingModalOpen(true)}
-        onOpenAiModal={() => setAiModalOpen(true)}
-        onOpenDbModal={() => setDbModalOpen(true)}
+        onOpenAiModal={isAdmin ? () => setAiModalOpen(true) : undefined}
+        onOpenDbModal={isAdmin ? () => setDbModalOpen(true) : undefined}
         onOpenAuthModal={() => setAuthModalOpen(true)}
         onOpenProfileModal={() => setProfileModalOpen(true)}
         onOpenExperienceModal={() => setExperienceModalOpen(true)}
@@ -923,6 +948,53 @@ export default function App() {
 
       {/* Main Stage View Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {/* Separate administrative workspace from candidate-facing workflow. */}
+        {isAdmin && (
+          <section className="no-print mb-6 rounded-2xl border border-amber-500/30 bg-gradient-to-br from-amber-950/40 via-stone-900 to-stone-950 p-5 shadow-lg">
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+              <div className="flex items-start gap-3">
+                <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 p-2.5 text-amber-300">
+                  <ShieldCheck className="h-5 w-5" />
+                </div>
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="text-sm font-semibold text-amber-100">Administrator Workspace</h2>
+                    <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-mono text-emerald-300">
+                      UNLIMITED ACCESS
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-stone-400">
+                    Platform operations are separated from the candidate workflow. Review persistence and AI provider configuration here.
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDbModalOpen(true)}
+                  className="inline-flex items-center gap-2 rounded-lg border border-stone-700 bg-stone-950/80 px-3 py-2 text-xs font-medium text-stone-200 transition hover:border-amber-400/50 hover:text-amber-200"
+                >
+                  <Database className="h-3.5 w-3.5 text-amber-300" />
+                  Database
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAiModalOpen(true)}
+                  className="inline-flex items-center gap-2 rounded-lg border border-stone-700 bg-stone-950/80 px-3 py-2 text-xs font-medium text-stone-200 transition hover:border-amber-400/50 hover:text-amber-200"
+                >
+                  <Settings2 className="h-3.5 w-3.5 text-amber-300" />
+                  AI Configuration
+                </button>
+              </div>
+            </div>
+          </section>
+        )}
+
+        <div className="mb-4 flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] text-stone-500">
+          <Layers className="h-3.5 w-3.5 text-amber-400" />
+          <span>User Workspace · Resume and Job Matching</span>
+        </div>
+        <ResumeAnalyzer aiConfig={aiConfig} />
         {currentStage === 1 && (
           <ExperienceParserView
             profileData={profileData}
@@ -997,19 +1069,23 @@ export default function App() {
               </span>
             </div>
             <div className="flex items-center gap-3 text-[11px] text-stone-400">
-              <button
-                onClick={() => setAiModalOpen(true)}
-                className="hover:text-amber-400 underline underline-offset-2 flex items-center gap-1"
-              >
-                <span>Switch AI Model</span>
-              </button>
-              <span>•</span>
-              <button
-                onClick={() => setDbModalOpen(true)}
-                className="hover:text-amber-400 underline underline-offset-2 flex items-center gap-1"
-              >
-                <span>DB Settings</span>
-              </button>
+              {isAdmin && (
+                <>
+                  <button
+                    onClick={() => setAiModalOpen(true)}
+                    className="hover:text-amber-400 underline underline-offset-2 flex items-center gap-1"
+                  >
+                    <span>AI Configuration</span>
+                  </button>
+                  <span>•</span>
+                  <button
+                    onClick={() => setDbModalOpen(true)}
+                    className="hover:text-amber-400 underline underline-offset-2 flex items-center gap-1"
+                  >
+                    <span>Database Settings</span>
+                  </button>
+                </>
+              )}
               <span>•</span>
               <button
                 onClick={() => setArchitectureModalOpen(true)}
@@ -1053,20 +1129,24 @@ export default function App() {
             <span>Autonomous Career Synthesis & ATS Compilation</span>
           </div>
           <div className="flex items-center gap-4">
-            <button
-              onClick={() => setDbModalOpen(true)}
-              className="text-stone-400 hover:text-stone-200 transition-colors"
-            >
-              PostgreSQL / DB Env
-            </button>
-            <span>•</span>
-            <button
-              onClick={() => setAiModalOpen(true)}
-              className="text-stone-400 hover:text-stone-200 transition-colors"
-            >
-              AI Model Config
-            </button>
-            <span>•</span>
+            {isAdmin && (
+              <>
+                <button
+                  onClick={() => setDbModalOpen(true)}
+                  className="text-stone-400 hover:text-stone-200 transition-colors"
+                >
+                  PostgreSQL / DB Env
+                </button>
+                <span>•</span>
+                <button
+                  onClick={() => setAiModalOpen(true)}
+                  className="text-stone-400 hover:text-stone-200 transition-colors"
+                >
+                  AI Model Config
+                </button>
+                <span>•</span>
+              </>
+            )}
             <button
               onClick={() => setArchitectureModalOpen(true)}
               className="text-stone-400 hover:text-stone-200 transition-colors"
@@ -1121,6 +1201,8 @@ export default function App() {
         isOpen={aiModalOpen}
         onClose={() => setAiModalOpen(false)}
         currentConfig={aiConfig}
+        isAdmin={isAdmin}
+        adminUserId={currentUser?.id || localStorage.getItem('resume_job_matcher_auth_token') || undefined}
         onSaveConfig={(newConfig) => {
           setAiConfig(newConfig);
           try {

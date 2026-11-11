@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Resume Matcher Admin</title><style>
+body{font:15px system-ui;background:#1c1917;color:#f5f5f4;max-width:900px;margin:40px auto;padding:0 20px}main{background:#292524;border:1px solid #44403c;border-radius:14px;padding:24px}label{display:block;margin:13px 0 5px;color:#d6d3d1}input{box-sizing:border-box;width:100%;padding:10px;border-radius:8px;border:1px solid #57534e;background:#1c1917;color:#fff}button{margin-top:20px;padding:10px 16px;border:0;border-radius:8px;background:#f59e0b;font-weight:700;cursor:pointer}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}#status{margin-top:16px;color:#fbbf24;white-space:pre-wrap}@media(max-width:650px){.grid{grid-template-columns:1fr}}
+</style></head>
+<body><main><h1>Resume Matcher Admin</h1><p>Only the configured administrator secret can read or change these settings. Secret fields are never returned.</p>
+<label>Admin secret<input id="secret" type="password" autocomplete="current-password"></label>
+<div class="grid" id="fields"></div><button id="save">Save configuration</button><div id="status"></div></main>
+<script>
+const keys=['AI_DEFAULT_PROVIDER','AI_DEFAULT_MODEL','AI_ENABLED_PROVIDERS','AGENTROUTER_BASE_URL','AGENTROUTER_MODEL','AGENTROUTER_API_KEY','GEMINI_API_KEY','OPENAI_API_KEY','ANTHROPIC_API_KEY','DEEPSEEK_API_KEY','CUSTOM_LLM_BASE_URL','CUSTOM_LLM_MODEL','CUSTOM_LLM_API_KEY','DB_TYPE','DB_HOST','DB_PORT','DB_USER','DB_PASSWORD','DB_NAME','DB_SSL','TON_NETWORK','TON_RECIPIENT_WALLET','TON_USDT_JETTON_MASTER','TON_DAILY_PASS_USDT','TON_DAILY_PASS_TON','ADMIN_EMAIL'];
+const secretKeys=new Set(['GEMINI_API_KEY','OPENAI_API_KEY','ANTHROPIC_API_KEY','DEEPSEEK_API_KEY','CUSTOM_LLM_API_KEY','DB_PASSWORD']);
+const fields=document.querySelector('#fields'); for(const key of keys){const label=document.createElement('label');label.textContent=key;const input=document.createElement('input');input.id=key;input.type=secretKeys.has(key)?'password':'text';input.placeholder=secretKeys.has(key)?'Leave blank to keep current':'';label.append(input);fields.append(label)}
+async function load(){const res=await fetch('/api/admin/config',{headers:{'x-admin-secret':document.querySelector('#secret').value}});const data=await res.json();if(!res.ok)throw Error(data.error);for(const [k,v] of Object.entries(data.config||{})){const el=document.querySelector('#'+k);if(el&&!secretKeys.has(k))el.value=v||''}document.querySelector('#status').textContent='Configuration loaded.'}
+document.querySelector('#secret').addEventListener('change',()=>load().catch(e=>document.querySelector('#status').textContent=e.message));
+document.querySelector('#save').onclick=async()=>{const body={};for(const key of keys){const value=document.querySelector('#'+key).value;if(value)body[key]=value}const res=await fetch('/api/admin/config',{method:'POST',headers:{'Content-Type':'application/json','x-admin-secret':document.querySelector('#secret').value},body:JSON.stringify(body)});const data=await res.json();document.querySelector('#status').textContent=res.ok?'Saved. Provider and billing settings apply immediately; database connection changes require a restart.':(data.error||'Save failed.')};
+</script></body></html>

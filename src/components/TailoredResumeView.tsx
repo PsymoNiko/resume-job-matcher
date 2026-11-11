@@ -15,7 +15,7 @@ import {
   ExternalLink
 } from 'lucide-react';
 import { ATSResume, JobMatchAnalysis, MasterProfile, ExtractedJobOpportunity, UserProfileInfo } from '../types';
-import { generateATSPDF } from '../utils/pdfGenerator';
+import { generateATSPDF, PDFLanguage } from '../utils/pdfGenerator';
 
 interface TailoredResumeViewProps {
   masterProfile: MasterProfile | null;
@@ -35,6 +35,7 @@ interface TailoredResumeViewProps {
   }) => Promise<void>;
 }
 
+/** Show the tailored resume and its copy, print, and download actions. */
 export const TailoredResumeView: React.FC<TailoredResumeViewProps> = ({
   masterProfile,
   matchAnalysis,
@@ -48,6 +49,7 @@ export const TailoredResumeView: React.FC<TailoredResumeViewProps> = ({
   const [viewTab, setViewTab] = useState<'preview' | 'markdown' | 'text'>('preview');
   const [isCopied, setIsCopied] = useState<boolean>(false);
   const [copiedType, setCopiedType] = useState<string>('');
+  const [pdfLanguage, setPdfLanguage] = useState<PDFLanguage>('en');
 
   // Editable contact info state initialized from user personal profile
   const [contactName, setContactName] = useState<string>(
@@ -120,10 +122,11 @@ export const TailoredResumeView: React.FC<TailoredResumeViewProps> = ({
     URL.revokeObjectURL(url);
   };
 
-  const handleDownloadPDF = () => {
+  /** Export the resume using the selected PDF language. */
+  const handleDownloadPDF = async () => {
     if (!resume) return;
     const filename = `${(contactName || 'developer').toLowerCase().replace(/\s+/g, '_')}_ats_resume.pdf`;
-    generateATSPDF(resume, filename);
+    await generateATSPDF(resume, filename, pdfLanguage);
   };
 
   const handlePrint = () => {
@@ -326,6 +329,19 @@ export const TailoredResumeView: React.FC<TailoredResumeViewProps> = ({
                   <Download className="w-3.5 h-3.5" />
                   <span>Download ATS PDF</span>
                 </button>
+                <label className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-stone-800 border border-stone-700 text-xs text-stone-300">
+                  <span>PDF Language</span>
+                  <select
+                    value={pdfLanguage}
+                    onChange={(event) => setPdfLanguage(event.target.value as PDFLanguage)}
+                    className="bg-transparent text-stone-100 outline-none"
+                    aria-label="PDF language"
+                  >
+                    <option value="en">English</option>
+                    <option value="fa">فارسی</option>
+                    <option value="ru">Русский</option>
+                  </select>
+                </label>
 
                 <button
                   id="btn-print-pdf"

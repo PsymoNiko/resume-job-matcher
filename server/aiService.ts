@@ -1,4 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
+import http from 'http';
+import https from 'https';
 import { 
   GitHubProfileData, 
   MasterProfile, 
@@ -8,11 +10,13 @@ import {
   AIConfigSettings,
   AIModelOption
 } from '../src/types';
+import { ResumeAnalysis } from '../src/types';
 
 // Supported default models
-export const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
-export const SECONDARY_GEMINI_MODEL = 'gemini-3.1-flash-lite';
-export const TERTIARY_GEMINI_MODEL = 'gemini-flash-latest';
+// Keep the server fallback chain on publicly available Gemini model IDs.
+export const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash';
+export const SECONDARY_GEMINI_MODEL = 'gemini-2.0-flash';
+export const TERTIARY_GEMINI_MODEL = 'gemini-2.5-flash-lite';
 
 export interface GenerationResult {
   text: string;
@@ -37,33 +41,73 @@ export interface AIExecutionOptions {
   timeoutMs?: number;
 }
 
+/** POST to an OpenAI-compatible endpoint with timeout and optional TLS override. */
+async function postOpenAICompatible(
+  endpoint: string,
+  headers: Record<string, string>,
+  body: string,
+  timeoutMs: number,
+  allowInsecureTls: boolean
+): Promise<{ ok: boolean; status: number; text: string }> {
+  const parsedUrl = new URL(endpoint);
+  const transport = parsedUrl.protocol === 'https:' ? https : http;
+
+  return new Promise((resolve, reject) => {
+    const request = transport.request(
+      parsedUrl,
+      {
+        method: 'POST',
+        headers,
+        timeout: timeoutMs,
+        ...(parsedUrl.protocol === 'https:' && allowInsecureTls ? { rejectUnauthorized: false } : {}),
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+        response.on('end', () => {
+          resolve({
+            ok: (response.statusCode || 500) >= 200 && (response.statusCode || 500) < 300,
+            status: response.statusCode || 500,
+            text: Buffer.concat(chunks).toString('utf8'),
+          });
+        });
+      }
+    );
+
+    request.on('timeout', () => request.destroy(new Error(`Request timed out after ${timeoutMs}ms`)));
+    request.on('error', reject);
+    request.write(body);
+    request.end();
+  });
+}
+
 // Catalog of preset model choices across providers
 export const PRESET_MODELS: AIModelOption[] = [
   // Google Gemini
   {
-    id: 'gemini-3.8-flash',
-    name: 'Gemini 3.8 Flash',
+    id: 'gemini-2.5-flash',
+    name: 'Gemini 2.5 Flash',
     provider: 'gemini',
     description: 'Ultra-fast, state-of-the-art multimodal model optimized for reasoning & structured JSON.',
     badge: 'Recommended',
     isDefault: true,
   },
   {
-    id: 'gemini-3.1-pro-preview',
-    name: 'Gemini 3.1 Pro Preview',
+    id: 'gemini-2.5-pro',
+    name: 'Gemini 2.5 Pro',
     provider: 'gemini',
     description: 'High-capability frontier model for deep architectural analysis and complex synthesis.',
     badge: 'Frontier',
   },
   {
-    id: 'gemini-3.1-flash-lite',
-    name: 'Gemini 3.1 Flash Lite',
+    id: 'gemini-2.5-flash-lite',
+    name: 'Gemini 2.5 Flash Lite',
     provider: 'gemini',
     description: 'Low-latency, lightweight Gemini model with resilient high throughput.',
   },
   {
-    id: 'gemini-flash-latest',
-    name: 'Gemini Flash Latest',
+    id: 'gemini-2.0-flash',
+    name: 'Gemini 2.0 Flash',
     provider: 'gemini',
     description: 'Continuously updated production Flash tier.',
   },
@@ -75,6 +119,13 @@ export const PRESET_MODELS: AIModelOption[] = [
     provider: 'openai',
     description: 'Omni-directional flagship model with excellent analytical skills and structured reasoning.',
     badge: 'Cloud',
+  },
+  {
+    id: 'agentrouter-default',
+    name: 'AgentRouter selected model',
+    provider: 'agentrouter',
+    description: 'Model selected in the AgentRouter console.',
+    badge: 'Gateway',
   },
   {
     id: 'gpt-4o-mini',
@@ -167,6 +218,7 @@ function getGenAI(customKey?: string) {
   return new GoogleGenAI({ apiKey });
 }
 
+/** Parse JSON from an AI response, removing fences and repairable trailing commas. */
 function cleanJsonResponse(rawText: string): any {
   let cleaned = rawText.trim();
   if (cleaned.startsWith('```json')) {
@@ -183,7 +235,13 @@ function cleanJsonResponse(rawText: string): any {
     const lastBrace = cleaned.lastIndexOf('}');
     if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
       const extracted = cleaned.substring(firstBrace, lastBrace + 1);
-      return JSON.parse(extracted);
+      try {
+        return JSON.parse(extracted);
+      } catch {
+        // Some local models emit harmless trailing commas despite being asked for JSON.
+        const repaired = extracted.replace(/,\s*([}\]])/g, '$1');
+        return JSON.parse(repaired);
+      }
     }
     throw new Error('Could not parse valid JSON from AI response.');
   }
@@ -201,7 +259,10 @@ export async function executeGeminiWithRetry(
   customKey?: string
 ): Promise<GenerationResult> {
   const ai = getGenAI(customKey);
-  const modelChain = Array.from(new Set([targetModel, DEFAULT_GEMINI_MODEL, SECONDARY_GEMINI_MODEL, TERTIARY_GEMINI_MODEL]));
+  const normalizedTargetModel = /^gemini-3\.|^gemini-flash-latest$/.test(targetModel)
+    ? DEFAULT_GEMINI_MODEL
+    : targetModel;
+  const modelChain = Array.from(new Set([normalizedTargetModel, DEFAULT_GEMINI_MODEL, SECONDARY_GEMINI_MODEL, TERTIARY_GEMINI_MODEL]));
 
   let lastError: any = null;
 
@@ -429,9 +490,14 @@ async function callCustomOpenAI(
   let baseUrl = (options.baseUrl || process.env.CUSTOM_LLM_BASE_URL || 'http://localhost:11434/v1').trim();
   baseUrl = baseUrl.replace(/\/+$/, '');
   const endpoint = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
+  const candidateEndpoints = [endpoint];
+  if (!baseUrl.endsWith('/v1') && !baseUrl.endsWith('/v1/chat/completions')) {
+    candidateEndpoints.push(`${baseUrl}/v1/chat/completions`);
+  }
 
   const apiKey = options.apiKey || process.env.CUSTOM_LLM_API_KEY || 'not-needed';
   const model = options.model || process.env.CUSTOM_LLM_MODEL || 'gemma2:9b';
+  const allowInsecureTls = process.env.CUSTOM_LLM_ALLOW_INSECURE_TLS === 'true';
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 40000);
@@ -442,31 +508,57 @@ async function callCustomOpenAI(
     };
     if (apiKey && apiKey !== 'not-needed') {
       headers.Authorization = `Bearer ${apiKey}`;
+      if (options.providerName === 'AgentRouter') {
+        headers['x-api-key'] = apiKey;
+      }
     }
 
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: `${systemPrompt}\n\nRespond ONLY with valid JSON.` },
-          { role: 'user', content: userPrompt },
-        ],
-        temperature: options.temperature ?? 0.2,
-        stream: false,
-      }),
-      signal: controller.signal,
-    });
+    let res: { ok: boolean; status: number; text: string } | undefined;
+    let lastErrorBody = '';
+    for (const candidateEndpoint of candidateEndpoints) {
+      res = await postOpenAICompatible(
+        candidateEndpoint,
+        headers,
+        JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: `${systemPrompt}\n\nRespond ONLY with valid JSON.` },
+            { role: 'user', content: userPrompt },
+          ],
+          temperature: options.temperature ?? 0.2,
+          format: 'json',
+          stream: false,
+        }),
+        options.timeoutMs || 40000,
+        allowInsecureTls
+      );
 
-    if (!res.ok) {
-      const errBody = await res.text();
+      if (res.ok || res.status !== 404 || candidateEndpoint === candidateEndpoints[candidateEndpoints.length - 1]) {
+        break;
+      }
+      lastErrorBody = res.text;
+    }
+
+    if (!res || !res.ok) {
+      const errBody = res ? res.text : lastErrorBody;
+      const authHint = options.providerName === 'AgentRouter' && res?.status === 401
+        ? ' Use an AgentRouter API token from https://ps.air-outer.com/console/token, not the console login password.'
+        : '';
       throw new Error(
-        `${options.providerName || 'Self-Hosted LLM'} endpoint error (${res.status} at ${baseUrl}): ${errBody.slice(0, 200)}`
+        `${options.providerName || 'Self-Hosted LLM'} endpoint error (${res?.status || 'network'} at ${baseUrl}): ${errBody.slice(0, 200)}${authHint}`
       );
     }
 
-    const data = await res.json();
+    let data: { choices?: Array<{ message?: { content?: string } }> };
+    try {
+      data = JSON.parse(res.text);
+    } catch {
+      const contentType = res.text.trimStart().startsWith('<') ? 'HTML' : 'non-JSON';
+      throw new Error(
+        `${options.providerName || 'Custom endpoint'} returned ${contentType} instead of JSON (${res.status}). ` +
+        'Check that the base URL points to an OpenAI-compatible /v1 endpoint.'
+      );
+    }
     const content = data.choices?.[0]?.message?.content;
     if (!content) throw new Error(`No content returned from ${options.providerName || 'custom endpoint'}`);
     return content;
@@ -477,19 +569,27 @@ async function callCustomOpenAI(
 
 /**
  * Unified AI execution router that runs the user's chosen provider & model,
- * with seamless fallback to Gemini or heuristic recovery when external service keys
- * or networks are unavailable.
+ * with explicit provider selection. Gemini is opt-in and is never used as an
+ * implicit fallback for another provider.
  */
 export async function executeUnifiedAI(
   systemPrompt: string,
   userPrompt: string,
   options?: AIExecutionOptions
 ): Promise<UnifiedGenerationResult> {
-  const provider: AIProvider = options?.provider || 'gemini';
-  const model = options?.model || DEFAULT_GEMINI_MODEL;
+  const configuredProvider = process.env.AI_DEFAULT_PROVIDER as AIProvider | undefined;
+  const enabledProviders = (process.env.AI_ENABLED_PROVIDERS || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const provider: AIProvider = options?.provider || configuredProvider || 'deepseek';
+  const model = options?.model || process.env.AI_DEFAULT_MODEL || 'deepseek-chat';
   const temp = options?.temperature ?? 0.2;
 
   console.log(`[Unified AI Router] Request received for provider: '${provider}', model: '${model}'`);
+  if (enabledProviders.length > 0 && !enabledProviders.includes(provider)) {
+    throw new Error(`AI provider '${provider}' is disabled by administrator configuration.`);
+  }
 
   // 1. Google Gemini
   if (provider === 'gemini') {
@@ -522,15 +622,7 @@ export async function executeUnifiedAI(
         fallbackTriggered: false,
       };
     } catch (openAiErr: any) {
-      console.warn(`[Unified AI Router] OpenAI (${model}) notice: ${openAiErr.message}. Gracefully engaging Gemini resilience chain...`);
-      const fallback = await executeGeminiWithRetry(systemPrompt, userPrompt, temp);
-      return {
-        text: fallback.text,
-        provider: 'gemini',
-        modelUsed: fallback.modelUsed,
-        fallbackTriggered: true,
-        notice: `OpenAI was unreachable (${openAiErr.message}). Output was synthesized seamlessly via Gemini fallback.`,
-      };
+      throw new Error(`OpenAI request failed: ${openAiErr.message}`);
     }
   }
 
@@ -550,15 +642,7 @@ export async function executeUnifiedAI(
         fallbackTriggered: false,
       };
     } catch (anthropicErr: any) {
-      console.warn(`[Unified AI Router] Anthropic (${model}) notice: ${anthropicErr.message}. Gracefully engaging Gemini resilience chain...`);
-      const fallback = await executeGeminiWithRetry(systemPrompt, userPrompt, temp);
-      return {
-        text: fallback.text,
-        provider: 'gemini',
-        modelUsed: fallback.modelUsed,
-        fallbackTriggered: true,
-        notice: `Anthropic Claude was unreachable (${anthropicErr.message}). Output was synthesized seamlessly via Gemini fallback.`,
-      };
+      throw new Error(`Anthropic request failed: ${anthropicErr.message}`);
     }
   }
 
@@ -578,56 +662,50 @@ export async function executeUnifiedAI(
         fallbackTriggered: false,
       };
     } catch (deepseekErr: any) {
-      console.warn(`[Unified AI Router] DeepSeek (${model}) notice: ${deepseekErr.message}. Gracefully engaging Gemini resilience chain...`);
-      const fallback = await executeGeminiWithRetry(systemPrompt, userPrompt, temp);
-      return {
-        text: fallback.text,
-        provider: 'gemini',
-        modelUsed: fallback.modelUsed,
-        fallbackTriggered: true,
-        notice: `DeepSeek was unreachable (${deepseekErr.message}). Output was synthesized seamlessly via Gemini fallback.`,
-      };
+      throw new Error(`DeepSeek request failed: ${deepseekErr.message}`);
     }
   }
 
   // 5. Self-Hosted (Ollama / vLLM / Gemma / DeepSeek-R1) or Custom OpenAI
-  if (provider === 'self_hosted' || provider === 'custom_openai') {
+  if (provider === 'agentrouter' || provider === 'self_hosted' || provider === 'custom_openai') {
     try {
+      const agentRouterModel = provider === 'agentrouter'
+        ? (model === 'agentrouter-default' || model.startsWith('agentrouter-default')
+          ? (process.env.AGENTROUTER_MODEL?.trim() || 'gpt-4o-mini')
+          : model)
+        : model;
       const text = await callCustomOpenAI(systemPrompt, userPrompt, {
-        baseUrl: options?.customBaseUrl,
-        model,
-        apiKey: options?.customApiKey,
+        baseUrl: provider === 'agentrouter'
+          ? (options?.customBaseUrl || process.env.AGENTROUTER_BASE_URL || 'https://agentrouter.org/pg')
+          : options?.customBaseUrl,
+        model: agentRouterModel,
+        apiKey: provider === 'agentrouter'
+          ? (options?.customApiKey || process.env.AGENTROUTER_API_KEY)
+          : options?.customApiKey,
         temperature: temp,
         timeoutMs: options?.timeoutMs,
-        providerName: provider === 'self_hosted' ? 'Self-Hosted LLM' : 'Custom Cloud Endpoint',
+        providerName: provider === 'agentrouter'
+          ? 'AgentRouter'
+          : provider === 'self_hosted'
+            ? 'Self-Hosted LLM'
+            : 'Custom Cloud Endpoint',
       });
       return {
         text,
         provider,
-        modelUsed: model,
+        modelUsed: agentRouterModel,
         fallbackTriggered: false,
       };
     } catch (customErr: any) {
-      console.warn(`[Unified AI Router] Custom/Self-Hosted (${model}) notice: ${customErr.message}. Gracefully engaging Gemini resilience chain...`);
-      const fallback = await executeGeminiWithRetry(systemPrompt, userPrompt, temp);
-      return {
-        text: fallback.text,
-        provider: 'gemini',
-        modelUsed: fallback.modelUsed,
-        fallbackTriggered: true,
-        notice: `Target endpoint was unreachable (${customErr.message}). Output was synthesized seamlessly via Gemini fallback.`,
-      };
+      if (provider === 'self_hosted' || provider === 'agentrouter') {
+        throw new Error(`${provider === 'agentrouter' ? 'AgentRouter' : 'Self-hosted AI'} connection failed: ${customErr.message}`);
+      }
+      throw new Error(`Custom AI endpoint failed: ${customErr.message}`);
     }
   }
 
   // Default fallback
-  const res = await executeGeminiWithRetry(systemPrompt, userPrompt, temp);
-  return {
-    text: res.text,
-    provider: 'gemini',
-    modelUsed: res.modelUsed,
-    fallbackTriggered: res.fallbackTriggered,
-  };
+  throw new Error(`Unsupported AI provider: ${provider}`);
 }
 
 /**
@@ -682,19 +760,26 @@ export async function testAIConnection(config: AIConfigSettings): Promise<{
  * Returns list of supported providers and detected environment flags.
  */
 export function getAvailableAIProviders() {
+  const enabledProviders = (process.env.AI_ENABLED_PROVIDERS || '')
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean);
   return {
-    providers: [
-      { id: 'gemini', name: 'Google Gemini', isConfigured: Boolean(process.env.GEMINI_API_KEY) },
-      { id: 'openai', name: 'OpenAI', isConfigured: Boolean(process.env.OPENAI_API_KEY) },
-      { id: 'anthropic', name: 'Anthropic Claude', isConfigured: Boolean(process.env.ANTHROPIC_API_KEY) },
-      { id: 'deepseek', name: 'DeepSeek', isConfigured: Boolean(process.env.DEEPSEEK_API_KEY) },
-      {
-        id: 'self_hosted',
-        name: 'Self-Hosted LLM (Ollama / vLLM / Gemma / DeepSeek)',
-        isConfigured: Boolean(process.env.CUSTOM_LLM_BASE_URL),
-        defaultBaseUrl: process.env.CUSTOM_LLM_BASE_URL || 'http://localhost:11434/v1',
-      },
-      { id: 'custom_openai', name: 'Custom OpenAI-Compatible API', isConfigured: false },
+  providers: [
+    { id: 'gemini', name: 'Google Gemini', isConfigured: Boolean(process.env.GEMINI_API_KEY), enabled: !enabledProviders.length || enabledProviders.includes('gemini'), isDefault: process.env.AI_DEFAULT_PROVIDER === 'gemini' },
+    { id: 'openai', name: 'OpenAI', isConfigured: Boolean(process.env.OPENAI_API_KEY), enabled: !enabledProviders.length || enabledProviders.includes('openai'), isDefault: process.env.AI_DEFAULT_PROVIDER === 'openai' },
+    { id: 'anthropic', name: 'Anthropic Claude', isConfigured: Boolean(process.env.ANTHROPIC_API_KEY), enabled: !enabledProviders.length || enabledProviders.includes('anthropic'), isDefault: process.env.AI_DEFAULT_PROVIDER === 'anthropic' },
+    { id: 'deepseek', name: 'DeepSeek', isConfigured: Boolean(process.env.DEEPSEEK_API_KEY), enabled: !enabledProviders.length || enabledProviders.includes('deepseek'), isDefault: process.env.AI_DEFAULT_PROVIDER === 'deepseek' },
+    { id: 'agentrouter', name: 'AgentRouter', isConfigured: Boolean(process.env.AGENTROUTER_API_KEY), defaultBaseUrl: process.env.AGENTROUTER_BASE_URL || 'https://agentrouter.org/pg', enabled: !enabledProviders.length || enabledProviders.includes('agentrouter'), isDefault: process.env.AI_DEFAULT_PROVIDER === 'agentrouter' },
+    {
+      id: 'self_hosted',
+      name: 'Self-Hosted LLM (Ollama / vLLM / Gemma / DeepSeek)',
+      isConfigured: Boolean(process.env.CUSTOM_LLM_BASE_URL),
+      defaultBaseUrl: process.env.CUSTOM_LLM_BASE_URL || 'http://localhost:11434/v1',
+      enabled: !enabledProviders.length || enabledProviders.includes('self_hosted'),
+      isDefault: process.env.AI_DEFAULT_PROVIDER === 'self_hosted',
+    },
+    { id: 'custom_openai', name: 'Custom OpenAI-Compatible API', isConfigured: false, enabled: !enabledProviders.length || enabledProviders.includes('custom_openai'), isDefault: process.env.AI_DEFAULT_PROVIDER === 'custom_openai' },
     ],
     presetModels: PRESET_MODELS,
     environment_status: {
@@ -703,6 +788,9 @@ export function getAvailableAIProviders() {
       has_anthropic_key: Boolean(process.env.ANTHROPIC_API_KEY),
       has_deepseek_key: Boolean(process.env.DEEPSEEK_API_KEY),
       has_custom_llm_base_url: Boolean(process.env.CUSTOM_LLM_BASE_URL),
+      default_provider: process.env.AI_DEFAULT_PROVIDER || 'deepseek',
+      default_model: process.env.AI_DEFAULT_MODEL || 'deepseek-chat',
+      enabled_providers: enabledProviders,
     },
   };
 }
@@ -1204,6 +1292,7 @@ export function buildHeuristicJobExtraction(
   };
 }
 
+/** Extract structured job details from source text with heuristic fallback. */
 export async function analyzeJobSourceText(
   sourceText: string,
   sourceMeta: {
@@ -1280,6 +1369,125 @@ Headline: ${candidateProfile?.headline || ''}`;
   }
 }
 
+/** Analyze a resume and return structured feedback or a heuristic fallback. */
+export async function analyzeResumeText(
+  sourceText: string,
+  fileName: string,
+  ai_config?: AIConfigSettings
+): Promise<ResumeAnalysis> {
+  const systemPrompt = `You are an expert resume coach and ATS optimization specialist.
+Review the resume text and return ONLY valid JSON matching this shape:
+{
+  "overall_score": number from 0 to 100,
+  "summary": "brief overall assessment",
+  "line_edits": [{"line_number": 1, "current_line": "exact line from the resume", "suggested_line": "truthful improved version", "reason": "why this change helps"}],
+  "strengths": ["specific strengths"],
+  "improvements": [{"area":"section or issue","priority":"high|medium|low","recommendation":"specific action","example":"optional rewrite example"}],
+  "missing_keywords": ["keywords or skills that appear absent or under-described"],
+  "ats_findings": ["specific ATS formatting or content findings"],
+  "improved_summary": "optional rewritten professional summary"
+}
+Be truthful: do not invent experience, employers, metrics, or skills. Prefer 3-6 specific items per list and actionable recommendations.
+For line_edits, select up to 12 lines that would materially benefit from rewriting. current_line must match the source exactly. Do not create edits for headings or lines that are already strong.`;
+  const userPrompt = `Resume filename: ${fileName}
+
+Resume text:
+${sourceText.slice(0, 30000)}`;
+
+  try {
+    const { text } = await executeUnifiedAI(systemPrompt, userPrompt, {
+      provider: ai_config?.provider,
+      model: ai_config?.model,
+      customBaseUrl: ai_config?.customBaseUrl,
+      customApiKey: ai_config?.customApiKey,
+      temperature: ai_config?.temperature,
+    });
+    return cleanJsonResponse(text) as ResumeAnalysis;
+  } catch (err: any) {
+    console.warn(`[Resume Analysis] AI unavailable, using structured fallback: ${err?.message || err}`);
+    const wordCount = sourceText.trim().split(/\s+/).filter(Boolean).length;
+    const hasContact = /@|linkedin|github|phone/i.test(sourceText);
+    const fallbackLines = sourceText.split(/\r?\n/);
+    const line_edits = fallbackLines
+      .map((line, index) => ({ line, lineNumber: index + 1 }))
+      .filter(({ line }) => line.length > 45 && /^[•*-]?\s*(worked|helped|responsible|worked on|did|made|used)\b/i.test(line))
+      .slice(0, 6)
+      .map(({ line, lineNumber }) => ({
+        line_number: lineNumber,
+        current_line: line,
+        suggested_line: line.replace(/^[•*-]?\s*/g, '• ').replace(/^(•\s*)?(worked|helped|was responsible for|worked on|did|made|used)\b/i, '• Delivered'),
+        reason: 'Lead with a stronger action verb and make the contribution easier for a recruiter to scan.',
+      }));
+    return {
+      overall_score: Math.max(35, Math.min(75, 45 + (hasContact ? 15 : 0) + (wordCount > 250 ? 10 : 0))),
+      summary: 'A basic review was generated because the configured AI provider was unavailable.',
+      line_edits,
+      strengths: [hasContact ? 'Contact information or professional links were detected.' : 'The document was readable and could be extracted successfully.', wordCount > 250 ? 'The resume contains enough content for a detailed review.' : 'The resume is concise.'],
+      improvements: [
+        { area: 'Quantified impact', priority: 'high', recommendation: 'Add measurable outcomes to experience bullets, such as latency, revenue, adoption, or delivery improvements.' },
+        { area: 'Targeting', priority: 'medium', recommendation: 'Tailor the skills and bullet wording to the job description you are applying for.' },
+      ],
+      missing_keywords: [],
+      ats_findings: [hasContact ? 'Contact information was detected.' : 'Add email, phone, and professional profile links near the header.', wordCount < 250 ? 'The resume may be too short to demonstrate sufficient experience.' : 'Review formatting for standard section headings and a single-column layout.'],
+      improved_summary: '',
+    };
+  }
+}
+
+/** Answer a question using the resume and the most recent conversation turns. */
+export async function chatAboutResume(
+  resumeText: string,
+  messages: { role: 'user' | 'assistant'; content: string }[],
+  ai_config?: AIConfigSettings
+): Promise<string> {
+  const systemPrompt = `You are a thoughtful career coach discussing a user's resume.
+Answer questions using only the resume and conversation context. Ask one concise follow-up question when it would help you learn about the user's actual responsibilities, impact, preferences, or target role. Never invent facts or claim the user has experience that is not supported. Give practical, specific advice.`;
+  const conversation = messages.slice(-12).map((message) => `${message.role.toUpperCase()}: ${message.content}`).join('\n');
+  const userPrompt = `Resume:
+${resumeText.slice(0, 30000)}
+
+Conversation:
+${conversation}`;
+  const result = await executeUnifiedAI(systemPrompt, userPrompt, {
+    provider: ai_config?.provider,
+    model: ai_config?.model,
+    customBaseUrl: ai_config?.customBaseUrl,
+    customApiKey: ai_config?.customApiKey,
+    temperature: ai_config?.temperature ?? 0.3,
+  });
+  return result.text.trim();
+}
+
+/** Rewrite the selected resume draft as validated Markdown and plain text. */
+export async function regenerateResumeText(
+  selectedResumeText: string,
+  ai_config?: AIConfigSettings
+): Promise<{ markdown: string; plain_text: string }> {
+  const systemPrompt = `You are an expert ATS resume editor.
+Rewrite the supplied resume draft into a polished, truthful, single-column resume.
+Preserve every factual detail and do not invent employers, dates, skills, responsibilities, or metrics.
+Improve clarity, grammar, consistency, section headings, and bullet structure.
+Return ONLY valid JSON in this exact shape:
+{"markdown":"complete Markdown resume","plain_text":"complete plain-text resume"}`;
+  const userPrompt = `Selected resume draft:
+${selectedResumeText.slice(0, 30000)}`;
+
+  const { text } = await executeUnifiedAI(systemPrompt, userPrompt, {
+    provider: ai_config?.provider,
+    model: ai_config?.model,
+    customBaseUrl: ai_config?.customBaseUrl,
+    customApiKey: ai_config?.customApiKey,
+    temperature: ai_config?.temperature ?? 0.2,
+  });
+  const parsed = cleanJsonResponse(text);
+  if (!parsed?.markdown || !parsed?.plain_text) {
+    throw new Error('AI returned an incomplete regenerated resume.');
+  }
+  return {
+    markdown: String(parsed.markdown),
+    plain_text: String(parsed.plain_text),
+  };
+}
+
 
 export { cleanJsonResponse };
-

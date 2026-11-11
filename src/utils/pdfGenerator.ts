@@ -1,18 +1,94 @@
 import jsPDF from 'jspdf';
 import { ATSResume } from '../types';
 
-export function generateATSPDF(resume: ATSResume, filename = 'tailored_ats_resume.pdf') {
+export type PDFLanguage = 'en' | 'fa' | 'ru';
+
+const PDF_LABELS: Record<PDFLanguage, Record<string, string>> = {
+  en: {
+    summary: 'Professional Summary',
+    skills: 'Core Technical Skills',
+    projects: 'Highlighted Technical Projects & Contributions',
+    repositories: 'Additional Open Source Repositories',
+    education: 'Education & Credentials',
+    technologies: 'Technologies',
+  },
+  fa: {
+    summary: 'خلاصه حرفه‌ای',
+    skills: 'مهارت‌های فنی اصلی',
+    projects: 'پروژه‌ها و مشارکت‌های فنی برجسته',
+    repositories: 'مخازن متن‌باز اضافی',
+    education: 'تحصیلات و گواهینامه‌ها',
+    technologies: 'فناوری‌ها',
+  },
+  ru: {
+    summary: 'Профессиональное резюме',
+    skills: 'Основные технические навыки',
+    projects: 'Избранные технические проекты и вклад',
+    repositories: 'Дополнительные репозитории с открытым исходным кодом',
+    education: 'Образование и сертификаты',
+    technologies: 'Технологии',
+  },
+};
+
+/** Encode font bytes for jsPDF's virtual file system. */
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+/** Load the font pair needed for the requested PDF language. */
+async function loadPdfFonts(doc: jsPDF, language: PDFLanguage) {
+  const regularFont = language === 'fa' ? '/fonts/NotoNaskhArabic-Regular.ttf' : '/fonts/NotoSans-Regular.ttf';
+  const boldFont = language === 'fa' ? regularFont : '/fonts/NotoSans-Bold.ttf';
+  const [regular, bold] = await Promise.all([
+    fetch(regularFont).then((response) => {
+      if (!response.ok) throw new Error(`Unable to load PDF font: ${regularFont}`);
+      return response.arrayBuffer();
+    }),
+    fetch(boldFont).then((response) => {
+      if (!response.ok) throw new Error(`Unable to load PDF font: ${boldFont}`);
+      return response.arrayBuffer();
+    }),
+  ]);
+
+  doc.addFileToVFS('ResumeRegular.ttf', arrayBufferToBase64(regular));
+  doc.addFont('ResumeRegular.ttf', 'Resume', 'normal');
+  doc.addFileToVFS('ResumeBold.ttf', arrayBufferToBase64(bold));
+  doc.addFont('ResumeBold.ttf', 'Resume', 'bold');
+  doc.setFont('Resume', 'normal');
+  if (language === 'fa') doc.setR2L(true);
+}
+
+/** Render and download an ATS resume PDF in the selected language. */
+export async function generateATSPDF(
+  resume: ATSResume,
+  filename = 'tailored_ats_resume.pdf',
+  language: PDFLanguage = 'en'
+) {
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
     format: 'a4',
   });
+  await loadPdfFonts(doc, language);
 
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
   const margin = 15;
   const contentWidth = pageWidth - margin * 2;
   let y = 18;
+  const labels = PDF_LABELS[language];
+  const rtl = language === 'fa';
+  /** Shape text for Persian while leaving other languages unchanged. */
+  const renderText = (text: string) => rtl ? doc.processArabic(text) : text;
+  /** Mirror a text position across the page for right-to-left rendering. */
+  const textX = (text: string, x: number) => rtl ? pageWidth - x : x;
+  const align = rtl ? 'right' as const : 'left' as const;
 
   const checkPageBreak = (neededSpace = 12) => {
     if (y + neededSpace >= pageHeight - 15) {
@@ -28,7 +104,7 @@ export function generateATSPDF(resume: ATSResume, filename = 'tailored_ats_resum
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(18);
   doc.setTextColor(20, 20, 20);
-  doc.text(contact.name || 'Developer Resume', margin, y);
+  doc.text(renderText(contact.name || 'Developer Resume'), textX(contact.name || 'Developer Resume', margin), y, { align });
   y += 6;
 
   // Title / Subheading (11pt)
@@ -36,7 +112,7 @@ export function generateATSPDF(resume: ATSResume, filename = 'tailored_ats_resum
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(11);
     doc.setTextColor(60, 60, 60);
-    doc.text(contact.title, margin, y);
+    doc.text(renderText(contact.title), textX(contact.title, margin), y, { align });
     y += 5;
   }
 
@@ -53,7 +129,7 @@ export function generateATSPDF(resume: ATSResume, filename = 'tailored_ats_resum
     doc.setFontSize(9);
     doc.setTextColor(80, 80, 80);
     const contactLine = contactItems.join('  |  ');
-    doc.text(contactLine, margin, y);
+    doc.text(renderText(contactLine), textX(contactLine, margin), y, { align });
     y += 7;
   }
 
@@ -64,12 +140,13 @@ export function generateATSPDF(resume: ATSResume, filename = 'tailored_ats_resum
   y += 6;
 
   // Helper for Section Headings
+  /** Draw a section heading and its divider, adding a page if needed. */
   const renderSectionHeader = (title: string) => {
     checkPageBreak(14);
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(10.5);
     doc.setTextColor(15, 23, 42); // slate-900
-    doc.text(title.toUpperCase(), margin, y);
+    doc.text(renderText(title.toUpperCase()), textX(title, margin), y, { align });
     y += 2;
     doc.setDrawColor(180, 180, 180);
     doc.setLineWidth(0.25);
@@ -78,20 +155,22 @@ export function generateATSPDF(resume: ATSResume, filename = 'tailored_ats_resum
   };
 
   // Helper for Body Paragraph
+  /** Wrap and render body text within the available page width. */
   const renderParagraph = (text: string, fontSize = 9.5, lineHeight = 4.2) => {
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(fontSize);
     doc.setTextColor(40, 40, 40);
-    const lines = doc.splitTextToSize(text, contentWidth);
+    const lines = doc.splitTextToSize(renderText(text), contentWidth);
     for (const line of lines) {
       checkPageBreak(lineHeight);
-      doc.text(line, margin, y);
+      doc.text(line, textX(line, margin), y, { align });
       y += lineHeight;
     }
     y += 2;
   };
 
   // Helper for Bullet Point
+  /** Wrap and render an indented bullet across page breaks. */
   const renderBullet = (text: string, indent = 4) => {
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(9);
@@ -99,37 +178,37 @@ export function generateATSPDF(resume: ATSResume, filename = 'tailored_ats_resum
     const bulletSymbol = '• ';
     const bulletWidth = doc.getTextWidth(bulletSymbol);
     const textWidth = contentWidth - indent - bulletWidth;
-    const lines = doc.splitTextToSize(text, textWidth);
+    const lines = doc.splitTextToSize(renderText(text), textWidth);
 
     checkPageBreak(4.5);
-    doc.text(bulletSymbol, margin + indent, y);
-    doc.text(lines[0], margin + indent + bulletWidth, y);
+    doc.text(bulletSymbol, textX(bulletSymbol, margin + indent), y, { align });
+    doc.text(lines[0], textX(lines[0], margin + indent + bulletWidth), y, { align });
     y += 4.2;
 
     for (let i = 1; i < lines.length; i++) {
       checkPageBreak(4.2);
-      doc.text(lines[i], margin + indent + bulletWidth, y);
+      doc.text(lines[i], textX(lines[i], margin + indent + bulletWidth), y, { align });
       y += 4.2;
     }
   };
 
   // 1. PROFESSIONAL SUMMARY
   if (sections.professional_summary) {
-    renderSectionHeader('Professional Summary');
+    renderSectionHeader(labels.summary);
     renderParagraph(sections.professional_summary);
     y += 2;
   }
 
   // 2. CORE TECHNICAL SKILLS
   if (sections.core_skills && sections.core_skills.length > 0) {
-    renderSectionHeader('Core Technical Skills');
+    renderSectionHeader(labels.skills);
     for (const group of sections.core_skills) {
       checkPageBreak(5);
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(9);
       doc.setTextColor(30, 30, 30);
       const prefix = `${group.category}: `;
-      doc.text(prefix, margin, y);
+      doc.text(renderText(prefix), textX(prefix, margin), y, { align });
 
       const prefixWidth = doc.getTextWidth(prefix);
       doc.setFont('helvetica', 'normal');
@@ -137,12 +216,12 @@ export function generateATSPDF(resume: ATSResume, filename = 'tailored_ats_resum
       const skillsStr = group.skills.join(', ');
       const skillLines = doc.splitTextToSize(skillsStr, contentWidth - prefixWidth);
 
-      doc.text(skillLines[0], margin + prefixWidth, y);
+      doc.text(renderText(skillLines[0]), textX(skillLines[0], margin + prefixWidth), y, { align });
       y += 4.2;
 
       for (let i = 1; i < skillLines.length; i++) {
         checkPageBreak(4.2);
-        doc.text(skillLines[i], margin + 6, y);
+        doc.text(renderText(skillLines[i]), textX(skillLines[i], margin + 6), y, { align });
         y += 4.2;
       }
     }
@@ -151,7 +230,7 @@ export function generateATSPDF(resume: ATSResume, filename = 'tailored_ats_resum
 
   // 3. HIGHLIGHTED TECHNICAL PROJECTS
   if (sections.highlighted_projects && sections.highlighted_projects.length > 0) {
-    renderSectionHeader('Highlighted Technical Projects & Contributions');
+    renderSectionHeader(labels.projects);
     for (const proj of sections.highlighted_projects) {
       checkPageBreak(12);
 
@@ -159,14 +238,14 @@ export function generateATSPDF(resume: ATSResume, filename = 'tailored_ats_resum
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(9.5);
       doc.setTextColor(20, 20, 20);
-      doc.text(proj.title, margin, y);
+      doc.text(renderText(proj.title), textX(proj.title, margin), y, { align });
 
       if (proj.role_or_type) {
         doc.setFont('helvetica', 'italic');
         doc.setFontSize(9);
         doc.setTextColor(80, 80, 80);
         const roleWidth = doc.getTextWidth(proj.role_or_type);
-        doc.text(proj.role_or_type, pageWidth - margin - roleWidth, y);
+        doc.text(renderText(proj.role_or_type), rtl ? margin : pageWidth - margin - roleWidth, y, { align });
       }
       y += 4.2;
 
@@ -175,7 +254,8 @@ export function generateATSPDF(resume: ATSResume, filename = 'tailored_ats_resum
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(8.5);
         doc.setTextColor(70, 70, 70);
-        doc.text(`Technologies: ${proj.technologies}`, margin, y);
+        const technologyText = `${labels.technologies}: ${proj.technologies}`;
+        doc.text(renderText(technologyText), textX(technologyText, margin), y, { align });
         y += 4;
       }
 
@@ -191,25 +271,25 @@ export function generateATSPDF(resume: ATSResume, filename = 'tailored_ats_resum
 
   // 4. ADDITIONAL REPOSITORIES
   if (sections.additional_repositories && sections.additional_repositories.length > 0) {
-    renderSectionHeader('Additional Open Source Repositories');
+    renderSectionHeader(labels.repositories);
     for (const repo of sections.additional_repositories) {
       checkPageBreak(8);
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(9);
       doc.setTextColor(20, 20, 20);
       const title = `${repo.title}: `;
-      doc.text(title, margin, y);
+      doc.text(renderText(title), textX(title, margin), y, { align });
 
       const titleWidth = doc.getTextWidth(title);
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(50, 50, 50);
       const summaryLines = doc.splitTextToSize(repo.summary, contentWidth - titleWidth);
-      doc.text(summaryLines[0], margin + titleWidth, y);
+      doc.text(renderText(summaryLines[0]), textX(summaryLines[0], margin + titleWidth), y, { align });
       y += 4.2;
 
       for (let i = 1; i < summaryLines.length; i++) {
         checkPageBreak(4.2);
-        doc.text(summaryLines[i], margin + 4, y);
+        doc.text(renderText(summaryLines[i]), textX(summaryLines[i], margin + 4), y, { align });
         y += 4.2;
       }
     }
@@ -218,7 +298,7 @@ export function generateATSPDF(resume: ATSResume, filename = 'tailored_ats_resum
 
   // 5. EDUCATION & CREDENTIALS
   if (sections.education_and_certifications && sections.education_and_certifications.length > 0) {
-    renderSectionHeader('Education & Credentials');
+    renderSectionHeader(labels.education);
     for (const edu of sections.education_and_certifications) {
       renderBullet(edu);
     }

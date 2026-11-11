@@ -557,6 +557,23 @@ export const db = {
     return newExp;
   },
 
+  /** Add valid experience items to the front of a user's saved list. */
+  bulkAddExperiences(userId: string, items: Array<Omit<UserExperienceItem, 'id' | 'user_id' | 'updated_at'>>): UserExperienceItem[] {
+    const list = this.getUserExperiences(userId);
+    const newItems: UserExperienceItem[] = items
+      .filter((item) => item && typeof item === 'object' && item.title)
+      .map((item) => ({
+        ...item,
+        id: `exp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        user_id: userId,
+        updated_at: Date.now(),
+      }));
+
+    dbCache.experiences[userId] = [...newItems, ...list];
+    saveDb();
+    return dbCache.experiences[userId];
+  },
+
   updateExperience(userId: string, expId: string, updateData: Partial<UserExperienceItem>): UserExperienceItem {
     const list = this.getUserExperiences(userId);
     const index = list.findIndex((e) => e.id === expId);
@@ -654,12 +671,13 @@ export const db = {
     return list;
   },
 
-  // AI-assisted experience updater based on natural language user request
+  /** Rewrite a saved experience using the user's request and repository context. */
   async updateExperienceWithAI(
     userId: string,
     expId: string,
     userPrompt: string,
-    aiConfig?: AIConfigSettings
+    aiConfig?: AIConfigSettings,
+    repositoryFeature?: string
   ): Promise<UserExperienceItem> {
     const list = this.getUserExperiences(userId);
     const exp = list.find((e) => e.id === expId);
@@ -673,8 +691,9 @@ Maintain factual truth, but rewrite, elevate, format, and quantify the bullets, 
 
 Rules:
 1. Every bullet must follow: (Strong Action Verb + Specific Technologies Used + Quantified Business/Engineering Impact).
-2. Incorporate the user's explicit request faithfully.
-3. Return ONLY valid JSON matching this schema:
+2. Use the repository feature/README context as the source of truth. Do not copy commit messages, invent metrics, or claim features not supported by that context.
+3. Incorporate the user's explicit request faithfully.
+4. Return ONLY valid JSON matching this schema:
 {
   "title": "Updated Role Title",
   "company_or_org": "Company Name",
@@ -690,15 +709,20 @@ Rules:
   ]
 }`;
 
+    const featureContext = repositoryFeature || exp.repository_feature;
     const prompt = `Current Experience Data:
 Role Title: ${exp.title}
 Company / Project: ${exp.company_or_org}
 Current Tech Stack: ${exp.tech_stack.join(', ')}
+Repository Feature / README Context:
+${featureContext || 'No repository feature context was stored. Infer only from the title, technology stack, and existing description.'}
 Current Bullets:
 ${exp.bullets.map((b) => `- ${b}`).join('\n')}
 
 User's Update Request:
-"${userPrompt}"`;
+"${userPrompt}"
+
+Generate concise resume bullets describing what this repository does and the engineering work represented by its actual features. Treat commit messages as implementation history, not as the repository description.`;
 
     try {
       const { text } = await executeUnifiedAI(systemPrompt, prompt, {
@@ -714,6 +738,7 @@ User's Update Request:
         company_or_org: parsed.company_or_org || exp.company_or_org,
         tech_stack: Array.isArray(parsed.tech_stack) ? parsed.tech_stack : exp.tech_stack,
         bullets: Array.isArray(parsed.bullets) ? parsed.bullets : exp.bullets,
+        repository_feature: featureContext || exp.repository_feature,
         quantified_impact: Array.isArray(parsed.quantified_impact) ? parsed.quantified_impact : exp.quantified_impact,
         source: 'ai_enhanced',
       });
@@ -901,4 +926,3 @@ export function updateUserQuota(userId: string, quotaUpdate: { free_tries_used?:
 export function getAdminEmail(): string {
   return process.env.ADMIN_EMAIL || ADMIN_EMAIL_DEFAULT;
 }
-
