@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -27,10 +28,15 @@ function save(config: Record<string, string>) {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), { mode: 0o600 });
 }
 
-/** Compare a supplied secret with the configured administrator secret. */
+/** Compare a supplied secret with the configured administrator secret (timing-safe, #8). */
 export function isAdminSecretValid(secret?: string) {
   const configured = process.env.ADMIN_SECRET_KEY?.trim();
-  return Boolean(configured && secret && secret === configured);
+  if (!configured || !secret || configured.length !== secret.length) return false;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(configured), Buffer.from(secret));
+  } catch {
+    return false;
+  }
 }
 
 /** Apply stored allowlisted settings to the process environment. */

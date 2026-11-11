@@ -52,6 +52,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       return;
     }
 
+    if (authMode === 'login' && !password) {
+      setErrorMessage('Please enter your password.');
+      return;
+    }
+
     if (authMode === 'register' && !name.trim()) {
       setErrorMessage('Please enter your full name.');
       return;
@@ -98,61 +103,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   };
 
-  const handleSocialConnect = async (prov: 'github' | 'google') => {
-    setErrorMessage(null);
-    setSuccessMessage(null);
-    setIsLoading(true);
-
-    try {
-      let targetEmail = email;
-      let targetName = name;
-      let targetGithub = githubUsername;
-      let targetAvatar = '';
-
-      if (prov === 'github') {
-        const ghUser = githubUsername.trim() || (email.includes('@') ? email.split('@')[0] : 'candidate-dev');
-        targetGithub = ghUser;
-        targetName = targetName || ghUser;
-        targetEmail = targetEmail || `${ghUser}@users.noreply.github.com`;
-        targetAvatar = `https://github.com/${ghUser}.png`;
-      } else if (prov === 'google') {
-        targetEmail = email.includes('@') ? email.trim() : 'alimohammadnia127@gmail.com';
-        targetName = targetName || targetEmail.split('@')[0];
-        targetAvatar = `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(targetName)}`;
-      }
-
-      const res = await fetch('/api/auth/social-connect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          provider: prov,
-          email: targetEmail,
-          name: targetName,
-          github_username: targetGithub,
-          avatar_url: targetAvatar,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || `Failed to sign in with ${prov}`);
-      }
-
-      // Persist auth token
-      localStorage.setItem('resume_job_matcher_auth_user', JSON.stringify(data.user));
-      localStorage.setItem('resume_job_matcher_auth_token', data.user.id);
-
-      setSuccessMessage(`Signed in with ${prov === 'github' ? 'GitHub' : 'Gmail / Google'}!`);
-      setTimeout(() => {
-        onAuthSuccess(data.user, data.profile);
-        onClose();
-      }, 500);
-    } catch (err: any) {
-      setErrorMessage(err.message || 'Social sign-in failed.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
@@ -223,35 +173,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             <span>{successMessage}</span>
           </div>
         )}
-
-        {/* Social Quick Sign-In */}
-        <div className="space-y-2">
-          <label className="text-[11px] font-mono uppercase tracking-wider text-stone-400">
-            Quick Connect with OAuth / Social
-          </label>
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              id="btn-auth-github"
-              disabled={isLoading}
-              onClick={() => handleSocialConnect('github')}
-              className="flex items-center justify-center gap-2 py-2.5 px-3 rounded-lg bg-stone-800 hover:bg-stone-700 border border-stone-700 text-stone-200 text-xs font-medium transition-colors"
-            >
-              <Github className="w-4 h-4" />
-              <span>GitHub Account</span>
-            </button>
-            <button
-              type="button"
-              id="btn-auth-google"
-              disabled={isLoading}
-              onClick={() => handleSocialConnect('google')}
-              className="flex items-center justify-center gap-2 py-2.5 px-3 rounded-lg bg-stone-800 hover:bg-stone-700 border border-stone-700 text-stone-200 text-xs font-medium transition-colors"
-            >
-              <Mail className="w-4 h-4 text-red-400" />
-              <span>Gmail / Google</span>
-            </button>
-          </div>
-        </div>
 
         {/* Divider */}
         <div className="relative flex items-center justify-center">

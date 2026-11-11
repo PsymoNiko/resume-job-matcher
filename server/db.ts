@@ -16,10 +16,33 @@ interface DatabaseSchema {
 const DATA_DIR = path.join(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'user_storage.json');
 
-// Salted SHA256 password hashing
+// Per-user scrypt password hashing with a random salt (#5).
+const SCRYPT_KEYLEN = 64;
 function hashPassword(password: string): string {
-  const salt = 'rjm_auth_salt_2026_';
-  return crypto.createHash('sha256').update(salt + password).digest('hex');
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, SCRYPT_KEYLEN).toString('hex');
+  return 'scrypt:' + salt + ':' + hash;
+}
+
+function verifyPassword(password: string, stored: string): boolean {
+  try {
+    const [scheme, salt, hash] = stored.split(':');
+    if (scheme !== 'scrypt' || !salt || !hash) return false;
+    const candidate = crypto.scryptSync(password, salt, SCRYPT_KEYLEN);
+    const expected = Buffer.from(hash, 'hex');
+    return candidate.length === expected.length && crypto.timingSafeEqual(candidate, expected);
+  } catch {
+    return false;
+  }
+}
+
+// Upgrade path for accounts hashed with the old static-salt SHA-256 scheme.
+function isLegacyPasswordHash(stored: string): boolean {
+  return !stored.includes(':');
+}
+function legacyPasswordMatches(password: string, stored: string): boolean {
+  const legacy = crypto.createHash('sha256').update('rjm_auth_salt_2026_' + password).digest('hex');
+  return legacy.length === stored.length && crypto.timingSafeEqual(Buffer.from(legacy), Buffer.from(stored));
 }
 
 // PostgreSQL pool state
@@ -200,14 +223,14 @@ async function initExternalDatabase() {
 
   try {
     const config: pg.PoolConfig = databaseUrl
-      ? { connectionString: databaseUrl, ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false }
+      ? { connectionString: databaseUrl, ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: process.env.DB_SSL_ALLOW_INSECURE !== 'true' } : false }
       : {
           host: process.env.DB_HOST,
           port: Number(process.env.DB_PORT) || 5432,
           user: process.env.DB_USER,
           password: process.env.DB_PASSWORD,
           database: process.env.DB_NAME || 'resume_matcher_db',
-          ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
+          ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: process.env.DB_SSL_ALLOW_INSECURE !== 'true' } : false,
         };
 
     pgPool = new Pool({
@@ -309,23 +332,48 @@ function initDb() {
   initExternalDatabase().catch(() => {});
 }
 
-function saveDb() {
+// Debounced, dirty-tracked persistence (#10): the JSON snapshot is written
+// asynchronously and atomically, and only changed users are re-synced to
+// PostgreSQL instead of the whole database on every mutation.
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let flushing = false;
+let flushQueued = false;
+const dirtyUsers = new Set<string>();
+
+function saveDb(changedUserId?: string) {
+  if (changedUserId) dirtyUsers.add(changedUserId);
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    void flushDb();
+  }, 250);
+}
+
+async function flushDb() {
+  if (flushing) {
+    flushQueued = true;
+    return;
+  }
+  flushing = true;
+  const userIds = Array.from(dirtyUsers);
+  dirtyUsers.clear();
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
-    fs.writeFileSync(DB_FILE, JSON.stringify(dbCache, null, 2), 'utf-8');
+    const tmpFile = DB_FILE + '.tmp';
+    await fs.promises.writeFile(tmpFile, JSON.stringify(dbCache, null, 2), 'utf-8');
+    await fs.promises.rename(tmpFile, DB_FILE);
   } catch (err) {
     console.log('[Database] Notice saving disk store.');
   }
 
-  // Asynchronously sync with external PostgreSQL if connected
-  if (pgConnected && pgPool) {
-    (async () => {
-      try {
-        const client = await pgPool.connect();
-        // Sync users
-        for (const user of Object.values(dbCache.users)) {
+  if (pgConnected && pgPool && userIds.length > 0) {
+    try {
+      const client = await pgPool.connect();
+      for (const userId of userIds) {
+        const user = dbCache.users[userId];
+        if (user) {
           await client.query(
             `INSERT INTO app_users (id, email, name, password_hash, auth_provider, avatar_url, github_username, created_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -339,8 +387,8 @@ function saveDb() {
             [user.id, user.email, user.name, user.password || null, user.auth_provider, user.avatar_url || null, user.github_username || null, user.created_at]
           );
         }
-        // Sync profiles
-        for (const [userId, profile] of Object.entries(dbCache.profiles)) {
+        const profile = dbCache.profiles[userId];
+        if (profile) {
           await client.query(
             `INSERT INTO app_profiles (user_id, data, updated_at)
              VALUES ($1, $2, $3)
@@ -348,27 +396,49 @@ function saveDb() {
             [userId, JSON.stringify(profile), profile.updated_at || Date.now()]
           );
         }
-        // Sync experiences
-        for (const [userId, exps] of Object.entries(dbCache.experiences)) {
-          for (const exp of exps) {
-            await client.query(
-              `INSERT INTO app_experiences (id, user_id, data, updated_at)
-               VALUES ($1, $2, $3, $4)
-               ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at;`,
-              [exp.id, userId, JSON.stringify(exp), exp.updated_at || Date.now()]
-            );
-          }
+        for (const exp of dbCache.experiences[userId] || []) {
+          await client.query(
+            `INSERT INTO app_experiences (id, user_id, data, updated_at)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at;`,
+            [exp.id, userId, JSON.stringify(exp), exp.updated_at || Date.now()]
+          );
         }
-        client.release();
-      } catch (syncErr: any) {
-        console.log(`[Database Sync Notice] External sync: ${syncErr.message}`);
       }
-    })();
+      client.release();
+    } catch (syncErr: any) {
+      console.log('[Database Sync Notice] External sync: ' + syncErr.message);
+    }
   }
+  flushing = false;
+  if (flushQueued) {
+    flushQueued = false;
+    saveDb();
+  }
+}
+
+/** Persist immediately (used on shutdown). */
+export async function flushNow() {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  await flushDb();
 }
 
 // Initialize on module load
 initDb();
+
+// Allow the operator to set a password for the seeded admin account (#3).
+(function ensureAdminPassword() {
+  const adminPassword = process.env.ADMIN_PASSWORD?.trim();
+  if (!adminPassword) return;
+  const admin = dbCache.users[ADMIN_USER_ID];
+  if (admin && !admin.password) {
+    admin.password = hashPassword(adminPassword);
+    saveDb(ADMIN_USER_ID);
+  }
+})();
 
 export const db = {
   // Authentication & Users
@@ -398,18 +468,13 @@ export const db = {
     github_username?: string;
   }): UserAccount {
     const normalizedEmail = params.email.trim().toLowerCase();
+    if (!params.password || params.password.length < 6) {
+      throw new Error('A password of at least 6 characters is required.');
+    }
     const existing = this.findUserByEmail(normalizedEmail);
     if (existing) {
-      // If user exists with social provider, update info and return
-      if (params.auth_provider !== 'email' || !existing.password) {
-        existing.name = params.name || existing.name;
-        existing.avatar_url = params.avatar_url || existing.avatar_url;
-        if (params.github_username) existing.github_username = params.github_username;
-        if (params.password) existing.password = hashPassword(params.password);
-        saveDb();
-        const { password: _, ...clean } = existing;
-        return clean;
-      }
+      // Account takeover fix (#5): never return or modify an existing account
+      // from the public registration endpoint.
       throw new Error('An account with this email address already exists. Please log in.');
     }
 
@@ -448,7 +513,7 @@ export const db = {
     // Initialize empty experiences collection
     dbCache.experiences[id] = [];
 
-    saveDb();
+    saveDb(id);
     const { password: _, ...clean } = newUser;
     return clean;
   },
@@ -459,28 +524,26 @@ export const db = {
     auth_provider: 'email' | 'github' | 'google';
   }): UserAccount {
     const normalizedEmail = params.email.trim().toLowerCase();
-    let user = this.findUserByEmail(normalizedEmail);
+    const user = this.findUserByEmail(normalizedEmail);
     if (!user) {
-      // If user logs in with social or if user email is provided, auto-register
-      if (params.auth_provider !== 'email') {
-        return this.registerUser({
-          email: normalizedEmail,
-          name: normalizedEmail.split('@')[0],
-          auth_provider: params.auth_provider,
-        });
-      }
       throw new Error('No account found for this email. Please register first.');
     }
+    if (!user.password) {
+      throw new Error('This account has no password set. Please sign in via Telegram or contact support.');
+    }
+    if (!params.password) {
+      throw new Error('Password is required for this account.');
+    }
 
-    if (params.auth_provider === 'email') {
-      if (user.password && params.password) {
-        const hashed = hashPassword(params.password);
-        if (user.password !== hashed && user.password !== params.password) {
-          throw new Error('Incorrect password. Please verify your credentials and try again.');
-        }
-      } else if (user.password && !params.password) {
-        throw new Error('Password is required for this email account.');
+    // Passwordless logins and plaintext-comparison fallbacks are removed (#5).
+    if (isLegacyPasswordHash(user.password)) {
+      if (!legacyPasswordMatches(params.password, user.password)) {
+        throw new Error('Incorrect password. Please verify your credentials and try again.');
       }
+      user.password = hashPassword(params.password); // transparent upgrade to scrypt
+      saveDb(user.id);
+    } else if (!verifyPassword(params.password, user.password)) {
+      throw new Error('Incorrect password. Please verify your credentials and try again.');
     }
 
     const { password: _, ...clean } = user;
@@ -508,7 +571,7 @@ export const db = {
         updated_at: Date.now(),
       };
       dbCache.profiles[userId] = profile;
-      saveDb();
+      saveDb(userId);
     }
     return profile;
   },
@@ -530,7 +593,7 @@ export const db = {
       if (updateData.github_username) dbCache.users[userId].github_username = updateData.github_username;
     }
 
-    saveDb();
+    saveDb(userId);
     return updated;
   },
 
@@ -538,7 +601,7 @@ export const db = {
   getUserExperiences(userId: string): UserExperienceItem[] {
     if (!dbCache.experiences[userId]) {
       dbCache.experiences[userId] = [];
-      saveDb();
+      saveDb(userId);
     }
     return dbCache.experiences[userId];
   },
@@ -553,7 +616,7 @@ export const db = {
     };
     list.unshift(newExp);
     dbCache.experiences[userId] = list;
-    saveDb();
+    saveDb(userId);
     return newExp;
   },
 
@@ -570,7 +633,7 @@ export const db = {
       }));
 
     dbCache.experiences[userId] = [...newItems, ...list];
-    saveDb();
+    saveDb(userId);
     return dbCache.experiences[userId];
   },
 
@@ -591,7 +654,7 @@ export const db = {
 
     list[index] = updated;
     dbCache.experiences[userId] = list;
-    saveDb();
+    saveDb(userId);
     return updated;
   },
 
@@ -599,7 +662,7 @@ export const db = {
     const list = this.getUserExperiences(userId);
     const initialLen = list.length;
     dbCache.experiences[userId] = list.filter((e) => e.id !== expId);
-    saveDb();
+    saveDb(userId);
     return dbCache.experiences[userId].length < initialLen;
   },
 
@@ -666,7 +729,7 @@ export const db = {
       this.saveUserProfile(userId, profile);
     }
 
-    saveDb();
+    saveDb(userId);
     console.log(`[Database] Synced ${addedCount} experiences from GitHub activity for user ${userId}.`);
     return list;
   },
@@ -891,7 +954,7 @@ Generate concise resume bullets describing what this repository does and the eng
     };
 
     dbCache.experiences[id] = [];
-    saveDb();
+    saveDb(id);
 
     const { password: _, ...clean } = newUser;
     return clean;
@@ -906,23 +969,18 @@ export function getUserById(userId: string): (UserAccount & { password?: string 
 export function updateUserQuota(userId: string, quotaUpdate: { free_tries_used?: number; unlimited_until?: number; ton_wallet_address?: string }) {
   const user = dbCache.users[userId];
   if (!user) {
-    // If guest session not in cache, create transient record
-    dbCache.users[userId] = {
-      id: userId,
-      email: `${userId}@guest.local`,
-      name: 'Guest Developer',
-      auth_provider: 'github',
-      created_at: Date.now(),
-      ...quotaUpdate,
-    };
-  } else {
-    if (quotaUpdate.free_tries_used !== undefined) user.free_tries_used = quotaUpdate.free_tries_used;
-    if (quotaUpdate.unlimited_until !== undefined) user.unlimited_until = quotaUpdate.unlimited_until;
-    if (quotaUpdate.ton_wallet_address !== undefined) user.ton_wallet_address = quotaUpdate.ton_wallet_address;
+    // Unknown users are no longer auto-created: quota cannot be minted for
+    // arbitrary identifiers (#2), which previously allowed unlimited free tries.
+    console.log('[Database] Ignoring quota update for unknown user ' + userId + '.');
+    return;
   }
-  saveDb();
+  if (quotaUpdate.free_tries_used !== undefined) user.free_tries_used = quotaUpdate.free_tries_used;
+  if (quotaUpdate.unlimited_until !== undefined) user.unlimited_until = quotaUpdate.unlimited_until;
+  if (quotaUpdate.ton_wallet_address !== undefined) user.ton_wallet_address = quotaUpdate.ton_wallet_address;
+  saveDb(userId);
 }
 
 export function getAdminEmail(): string {
   return process.env.ADMIN_EMAIL || ADMIN_EMAIL_DEFAULT;
 }
+

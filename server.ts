@@ -1,4 +1,6 @@
 import express from 'express';
+import crypto from 'crypto';
+import dns from 'dns';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
@@ -21,7 +23,7 @@ import {
   getAvailableAIProviders,
   PRESET_MODELS,
 } from './server/aiService';
-import { db } from './server/db';
+import { db, flushNow } from './server/db';
 import {
   getTonBillingConfig,
   getUserQuotaState,
@@ -40,14 +42,201 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
-app.use(express.json({ limit: '15mb' }));
+// Route-scoped body limits: large payloads are only accepted on the two
+// document/PDF upload routes; everything else is capped at 1 MB (#8).
+app.use('/api/parse-job-document', express.json({ limit: '15mb' }));
+app.use('/api/analyze-resume', express.json({ limit: '15mb' }));
+app.use(express.json({ limit: '1mb' }));
 
-/** Accept requests authenticated by the admin secret or an admin user account. */
-function isAdminRequest(req: express.Request): boolean {
-  const userId = req.headers['x-user-id'] as string | undefined;
-  return isAdminSecretValid(req.headers['x-admin-secret'] as string)
-    || Boolean(userId && isUserAdmin(db.getUser(userId) || userId));
+// Baseline security headers (#8).
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  next();
+});
+
+// Simple per-IP sliding-window rate limiter (#8). No external dependencies.
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+function rateLimit(windowMs: number, max: number) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (isInternalRequest(req)) return next(); // the Telegram bot polls us over loopback
+    const forwarded = req.headers['x-forwarded-for'];
+    const ip = (typeof forwarded === 'string' && forwarded.split(',')[0].trim()) || req.socket.remoteAddress || 'unknown';
+    const now = Date.now();
+    const bucket = rateBuckets.get(ip);
+    if (!bucket || bucket.resetAt < now) {
+      rateBuckets.set(ip, { count: 1, resetAt: now + windowMs });
+      if (rateBuckets.size > 10000) {
+        for (const [key, value] of rateBuckets) if (value.resetAt < now) rateBuckets.delete(key);
+      }
+    } else if (++bucket.count > max) {
+      return res.status(429).json({ error: 'Too many requests. Please slow down and try again shortly.' });
+    }
+    next();
+  };
 }
+const strictRateLimit = rateLimit(60_000, 20);
+
+// ===== Session authentication (#2) =====
+// Identity is derived from a signed HttpOnly cookie (or the shared internal
+// token used by the Telegram bot). Client-supplied user IDs are never trusted.
+const SESSION_COOKIE = 'rjm_session';
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || crypto.randomBytes(32).toString('hex');
+process.env.INTERNAL_API_TOKEN = INTERNAL_API_TOKEN; // shared in-process with the Telegram bot
+const SESSION_SECRET = process.env.SESSION_SECRET || crypto.createHmac('sha256', INTERNAL_API_TOKEN).update('rjm-session-v1').digest('hex');
+
+function signSessionToken(userId: string): string {
+  const payload = userId + '.' + String(Date.now() + SESSION_TTL_MS);
+  const mac = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('hex');
+  return payload + '.' + mac;
+}
+
+function setSessionCookie(res: express.Response, userId: string) {
+  const token = signSessionToken(userId);
+  // Opt-in Secure flag so plain-HTTP deployments keep working.
+  const secure = process.env.COOKIE_SECURE === 'true';
+  res.setHeader(
+    'Set-Cookie',
+    SESSION_COOKIE + '=' + encodeURIComponent(token) + '; Path=/; HttpOnly; SameSite=Lax; Max-Age=' + Math.floor(SESSION_TTL_MS / 1000) + (secure ? '; Secure' : '')
+  );
+}
+
+function parseCookies(req: express.Request): Record<string, string> {
+  const header = req.headers.cookie;
+  const out: Record<string, string> = {};
+  if (typeof header === 'string') {
+    for (const part of header.split(';')) {
+      const idx = part.indexOf('=');
+      if (idx > 0) out[part.slice(0, idx).trim()] = decodeURIComponent(part.slice(idx + 1).trim());
+    }
+  }
+  return out;
+}
+
+function isInternalRequest(req: express.Request): boolean {
+  const token = req.headers['x-internal-token'];
+  if (typeof token !== 'string' || !token) return false;
+  const a = Buffer.from(token);
+  const b = Buffer.from(INTERNAL_API_TOKEN);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+/** Resolve the authenticated user: session cookie or trusted internal service token. */
+function getSessionUser(req: express.Request): string | null {
+  if (isInternalRequest(req)) {
+    const uid = req.headers['x-user-id'];
+    return typeof uid === 'string' && uid ? uid : null;
+  }
+  const token = parseCookies(req)[SESSION_COOKIE];
+  if (!token) return null;
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const [userId, expiresAt, mac] = parts;
+  const expected = crypto.createHmac('sha256', SESSION_SECRET).update(userId + '.' + expiresAt).digest('hex');
+  const a = Buffer.from(mac);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  if (Number(expiresAt) < Date.now()) return null;
+  return userId;
+}
+
+/** Express guard for all user-scoped routes: 401 unless a valid session exists. */
+function requireSession(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const userId = getSessionUser(req);
+  if (!userId) {
+    return res.status(401).json({ error: 'Authentication required. Please sign in again.' });
+  }
+  // Internal service calls (Telegram bot) are trusted; cookie sessions must map to a real account.
+  if (!isInternalRequest(req) && !db.getUser(userId)) {
+    return res.status(401).json({ error: 'Session is no longer valid. Please sign in again.' });
+  }
+  (req as any).sessionUserId = userId;
+  next();
+}
+
+/** Validate Telegram WebApp initData exactly as specified by Telegram (#6). */
+function validateTelegramInitData(initData: string): Record<string, any> | null {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
+  if (!initData || !botToken) return null;
+  const params = new URLSearchParams(initData);
+  const hash = params.get('hash');
+  if (!hash) return null;
+  params.delete('hash');
+  const dataCheckString = Array.from(params.entries())
+    .map(([key, value]) => key + '=' + value)
+    .sort()
+    .join('\n');
+  const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
+  const computed = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+  const a = Buffer.from(hash);
+  const b = Buffer.from(computed);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  try {
+    const userRaw = params.get('user');
+    return userRaw ? JSON.parse(userRaw) : {};
+  } catch {
+    return null;
+  }
+}
+
+// ===== SSRF protection for outbound fetches (#7) =====
+function isPrivateIp(ip: string): boolean {
+  if (/^(127\.|10\.|192\.168\.|169\.254\.|0\.0\.0\.0)/.test(ip)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return true;
+  if (/^(::1|fc|fd|fe80)/i.test(ip)) return true;
+  return false;
+}
+
+/** Only public https origins are fetchable; DNS results are checked too. */
+async function assertSafePublicUrl(rawUrl: string): Promise<URL> {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error('Invalid URL.');
+  }
+  if (parsed.protocol !== 'https:') throw new Error('Only https:// job URLs are supported.');
+  if (parsed.username || parsed.password) throw new Error('Credentials in URLs are not allowed.');
+  const host = parsed.hostname.toLowerCase();
+  if (host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.localhost')) {
+    throw new Error('Private network addresses are not allowed.');
+  }
+  let records: Array<{ address: string }>;
+  try {
+    records = (await dns.promises.lookup(host, { all: true })) as Array<{ address: string }>;
+  } catch {
+    throw new Error('Could not resolve the job URL host.');
+  }
+  for (const { address } of records) {
+    if (isPrivateIp(address)) throw new Error('Private network addresses are not allowed.');
+  }
+  return parsed;
+}
+
+/** Accept requests authenticated by the admin secret or an admin user session (#3). */
+function isAdminRequest(req: express.Request): boolean {
+  if (isAdminSecretValid(req.headers['x-admin-secret'] as string)) return true;
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser) return false;
+  return isUserAdmin(db.getUser(sessionUser));
+}
+
+/** Strip client-supplied custom AI endpoints from non-admin requests (#7). */
+function sanitizeAiConfig(req: express.Request, aiConfig: any) {
+  if (!aiConfig || typeof aiConfig !== 'object') return aiConfig;
+  const cfg = { ...aiConfig };
+  if ((cfg.customBaseUrl || cfg.customApiKey) && !isAdminRequest(req)) {
+    delete cfg.customBaseUrl;
+    delete cfg.customApiKey;
+  }
+  return cfg;
+}
+
+// Short-lived cache for GitHub extraction results (#12).
+const githubExtractCache = new Map<string, { expiresAt: number; data: any }>();
 
 app.get('/api/admin/config', (req, res) => {
   if (!isAdminRequest(req)) {
@@ -125,9 +314,9 @@ app.get('/api/ai/providers', (req, res) => {
 });
 
 // AI Connection & Latency Test Endpoint
-app.post('/api/ai/test-connection', async (req, res) => {
+app.post('/api/ai/test-connection', strictRateLimit, async (req, res) => {
   try {
-    const result = await testAIConnection(req.body);
+    const result = await testAIConnection(sanitizeAiConfig(req, req.body));
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message || 'Connection test failed' });
@@ -136,7 +325,7 @@ app.post('/api/ai/test-connection', async (req, res) => {
 
 
 // Authentication Routes (Email, GitHub, Google/Gmail)
-app.post('/api/auth/register', (req, res) => {
+app.post('/api/auth/register', strictRateLimit, (req, res) => {
   try {
     const { email, name, password, auth_provider = 'email', avatar_url, github_username } = req.body;
     if (!email) {
@@ -150,6 +339,7 @@ app.post('/api/auth/register', (req, res) => {
       avatar_url,
       github_username,
     });
+    setSessionCookie(res, user.id);
     const profile = db.getUserProfile(user.id);
     res.json({ user, profile });
   } catch (err: any) {
@@ -157,13 +347,14 @@ app.post('/api/auth/register', (req, res) => {
   }
 });
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', strictRateLimit, (req, res) => {
   try {
     const { email, password, auth_provider = 'email' } = req.body;
     if (!email) {
       return res.status(400).json({ error: 'Email address is required' });
     }
     const user = db.loginUser({ email, password, auth_provider });
+    setSessionCookie(res, user.id);
     const profile = db.getUserProfile(user.id);
     res.json({ user, profile });
   } catch (err: any) {
@@ -172,36 +363,36 @@ app.post('/api/auth/login', (req, res) => {
 });
 
 app.get('/api/auth/me', (req, res) => {
-  const userId = (req.headers['x-user-id'] as string) || 'guest_user_default';
-  const user = db.getUser(userId) || db.getUser('guest_user_default');
-  const profile = db.getUserProfile(user?.id || 'guest_user_default');
+  const userId = getSessionUser(req);
+  const user = userId ? db.getUser(userId) : null;
+  if (!user) {
+    return res.status(401).json({ error: 'Not signed in.' });
+  }
+  const profile = db.getUserProfile(user.id);
   res.json({ user, profile });
 });
 
-app.post('/api/auth/social-connect', (req, res) => {
-  try {
-    const { provider, email, name, avatar_url, github_username } = req.body;
-    const finalEmail = email || (github_username ? `${github_username}@users.noreply.github.com` : 'dev@example.com');
-    const user = db.registerUser({
-      email: finalEmail,
-      name: name || github_username || 'Developer',
-      auth_provider: provider || 'github',
-      avatar_url,
-      github_username,
-    });
-    const profile = db.getUserProfile(user.id);
-    res.json({ user, profile });
-  } catch (err: any) {
-    res.status(400).json({ error: err.message || 'Social connection failed' });
-  }
+app.post('/api/auth/social-connect', strictRateLimit, (_req, res) => {
+  // Fake OAuth removed (#5): this endpoint never verified any provider token,
+  // so it must not create or return accounts. Use email & password instead.
+  res.status(501).json({ error: 'Social sign-in is disabled. Please register with email and password.' });
 });
 
-// Telegram DWApp Auto-Authentication
-app.post('/api/auth/telegram', (req, res) => {
+// Telegram DWApp Auto-Authentication (initData is HMAC-verified, #6)
+app.post('/api/auth/telegram', strictRateLimit, (req, res) => {
   try {
-    const { telegram_id, first_name, last_name, username, photo_url } = req.body;
+    const { telegram_id, first_name, last_name, username, photo_url, init_data } = req.body;
     if (!telegram_id) {
       return res.status(400).json({ error: 'telegram_id is required' });
+    }
+    // Trust the Telegram identity only when the signed initData payload verifies
+    // against the bot token. Internal requests (our own bot) are exempt.
+    if (!isInternalRequest(req)) {
+      const validated = validateTelegramInitData(typeof init_data === 'string' ? init_data : '');
+      const validatedId = validated?.user?.id ?? validated?.id;
+      if (!validated || String(validatedId) !== String(telegram_id)) {
+        return res.status(401).json({ error: 'Invalid or missing Telegram signature. Please reopen the app from Telegram.' });
+      }
     }
     const user = db.loginWithTelegram({
       telegram_id,
@@ -210,6 +401,7 @@ app.post('/api/auth/telegram', (req, res) => {
       username,
       photo_url,
     });
+    setSessionCookie(res, user.id);
     const profile = db.getUserProfile(user.id);
     const quota = getUserQuotaState(user.id);
     res.json({ user, profile, quota });
@@ -228,9 +420,9 @@ app.get('/api/ton/config', (req, res) => {
   }
 });
 
-app.get('/api/ton/user-quota', (req, res) => {
+app.get('/api/ton/user-quota', requireSession, (req, res) => {
   try {
-    const userId = (req.headers['x-user-id'] as string) || (req.query.user_id as string) || 'guest_user_default';
+    const userId = (req as any).sessionUserId;
     const quota = getUserQuotaState(userId);
     res.json({ quota });
   } catch (err: any) {
@@ -238,9 +430,9 @@ app.get('/api/ton/user-quota', (req, res) => {
   }
 });
 
-app.post('/api/ton/create-order', (req, res) => {
+app.post('/api/ton/create-order', requireSession, (req, res) => {
   try {
-    const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
+    const userId = (req as any).sessionUserId;
     const { selected_currency } = req.body;
     const order = createTonPaymentOrder({
       userId,
@@ -252,13 +444,13 @@ app.post('/api/ton/create-order', (req, res) => {
   }
 });
 
-app.post('/api/ton/verify-payment', (req, res) => {
+app.post('/api/ton/verify-payment', requireSession, async (req, res) => {
   try {
     const { order_id, tx_hash, sender_address } = req.body;
     if (!order_id) {
       return res.status(400).json({ error: 'order_id is required' });
     }
-    const result = verifyAndActivateDailyPass({
+    const result = await verifyAndActivateDailyPass({
       orderId: order_id,
       txHash: tx_hash,
       senderAddress: sender_address,
@@ -270,9 +462,9 @@ app.post('/api/ton/verify-payment', (req, res) => {
 });
 
 // Admin overrides: manual pass granting and quota reset
-app.post('/api/ton/admin/grant-pass', (req, res) => {
+app.post('/api/ton/admin/grant-pass', requireSession, (req, res) => {
   try {
-    const adminUserId = (req.headers['x-user-id'] as string) || req.body.admin_user_id || '';
+    const adminUserId = (req as any).sessionUserId;
     const { target_user_id, duration_hours = 24 } = req.body;
     if (!target_user_id) {
       return res.status(400).json({ error: 'target_user_id is required' });
@@ -284,9 +476,9 @@ app.post('/api/ton/admin/grant-pass', (req, res) => {
   }
 });
 
-app.post('/api/ton/admin/reset-quota', (req, res) => {
+app.post('/api/ton/admin/reset-quota', requireSession, (req, res) => {
   try {
-    const adminUserId = (req.headers['x-user-id'] as string) || req.body.admin_user_id || '';
+    const adminUserId = (req as any).sessionUserId;
     const { target_user_id } = req.body;
     if (!target_user_id) {
       return res.status(400).json({ error: 'target_user_id is required' });
@@ -299,15 +491,15 @@ app.post('/api/ton/admin/reset-quota', (req, res) => {
 });
 
 // Personal Profile Filling & Management
-app.get('/api/user/profile', (req, res) => {
-  const userId = (req.headers['x-user-id'] as string) || 'guest_user_default';
+app.get('/api/user/profile', requireSession, (req, res) => {
+  const userId = (req as any).sessionUserId;
   const profile = db.getUserProfile(userId);
   res.json({ profile });
 });
 
-app.post('/api/user/profile', (req, res) => {
+app.post('/api/user/profile', requireSession, (req, res) => {
   try {
-    const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
+    const userId = (req as any).sessionUserId;
     const updated = db.saveUserProfile(userId, req.body);
     res.json({ profile: updated });
   } catch (err: any) {
@@ -316,15 +508,15 @@ app.post('/api/user/profile', (req, res) => {
 });
 
 // Stored Experience Database Routes
-app.get('/api/user/experiences', (req, res) => {
-  const userId = (req.headers['x-user-id'] as string) || (req.query.user_id as string) || 'guest_user_default';
+app.get('/api/user/experiences', requireSession, (req, res) => {
+  const userId = (req as any).sessionUserId;
   const experiences = db.getUserExperiences(userId);
   res.json({ experiences });
 });
 
-app.post('/api/user/experiences', (req, res) => {
+app.post('/api/user/experiences', requireSession, (req, res) => {
   try {
-    const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
+    const userId = (req as any).sessionUserId;
     const newExp = db.addExperience(userId, req.body);
     res.json({ experience: newExp, experiences: db.getUserExperiences(userId) });
   } catch (err: any) {
@@ -332,9 +524,9 @@ app.post('/api/user/experiences', (req, res) => {
   }
 });
 
-app.post('/api/user/experiences/bulk', (req, res) => {
+app.post('/api/user/experiences/bulk', requireSession, (req, res) => {
   try {
-    const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
+    const userId = (req as any).sessionUserId;
     const items = Array.isArray(req.body?.items) ? req.body.items : Array.isArray(req.body) ? req.body : [];
     if (!items.length) {
       return res.status(400).json({ error: 'items array is required' });
@@ -346,9 +538,9 @@ app.post('/api/user/experiences/bulk', (req, res) => {
   }
 });
 
-app.put('/api/user/experiences/:id', (req, res) => {
+app.put('/api/user/experiences/:id', requireSession, (req, res) => {
   try {
-    const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
+    const userId = (req as any).sessionUserId;
     const expId = req.params.id;
     const updated = db.updateExperience(userId, expId, req.body);
     res.json({ experience: updated });
@@ -357,9 +549,9 @@ app.put('/api/user/experiences/:id', (req, res) => {
   }
 });
 
-app.delete('/api/user/experiences/:id', (req, res) => {
+app.delete('/api/user/experiences/:id', requireSession, (req, res) => {
   try {
-    const userId = (req.headers['x-user-id'] as string) || 'guest_user_default';
+    const userId = (req as any).sessionUserId;
     const expId = req.params.id;
     const success = db.deleteExperience(userId, expId);
     res.json({ success });
@@ -368,9 +560,9 @@ app.delete('/api/user/experiences/:id', (req, res) => {
   }
 });
 
-app.post('/api/user/experiences/sync-github', (req, res) => {
+app.post('/api/user/experiences/sync-github', requireSession, (req, res) => {
   try {
-    const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
+    const userId = (req as any).sessionUserId;
     const { github_data } = req.body;
     if (!github_data) {
       return res.status(400).json({ error: 'github_data is required' });
@@ -385,14 +577,14 @@ app.post('/api/user/experiences/sync-github', (req, res) => {
 /** Update an experience from either supported AI enhancement route shape. */
 async function handleAIExperienceUpdate(req: express.Request, res: express.Response) {
   try {
-    const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
+    const userId = (req as any).sessionUserId;
     const experienceId = req.params.id || req.body.experience_id;
     const userPrompt = req.body.user_prompt || req.body.userPrompt;
     const { ai_config, repository_feature } = req.body;
     if (!experienceId || !userPrompt) {
       return res.status(400).json({ error: 'experience_id and user_prompt are required' });
     }
-    const updated = await db.updateExperienceWithAI(userId, experienceId, userPrompt, ai_config, repository_feature);
+    const updated = await db.updateExperienceWithAI(userId, experienceId, userPrompt, sanitizeAiConfig(req, ai_config), repository_feature);
     res.json({ experience: updated });
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Failed to update experience with AI' });
@@ -401,11 +593,11 @@ async function handleAIExperienceUpdate(req: express.Request, res: express.Respo
 
 // Keep both API shapes supported: the current frontend uses the resource URL,
 // while older clients send the experience ID in the request body.
-app.post('/api/user/experiences/:id/ai-enhance', handleAIExperienceUpdate);
-app.post('/api/user/experiences/ai-update', handleAIExperienceUpdate);
+app.post('/api/user/experiences/:id/ai-enhance', requireSession, handleAIExperienceUpdate);
+app.post('/api/user/experiences/ai-update', requireSession, handleAIExperienceUpdate);
 
 // Stage 1: GitHub Experience Parser
-app.post('/api/extract-github', async (req, res) => {
+app.post('/api/extract-github', requireSession, async (req, res) => {
   try {
     const { token, username } = req.body;
 
@@ -413,6 +605,15 @@ app.post('/api/extract-github', async (req, res) => {
       return res.status(400).json({
         error: 'Either a GitHub Personal Access Token (PAT) or a GitHub username is required.',
       });
+    }
+
+    // Serve fresh cached results per username/PAT to avoid upstream rate limits (#12).
+    const cacheKey = token
+      ? 'pat:' + crypto.createHash('sha256').update(token.trim()).digest('hex').slice(0, 16)
+      : 'user:' + String(username).trim().toLowerCase();
+    const cached = githubExtractCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return res.json({ profile: cached.data });
     }
 
     const headers: Record<string, string> = {
@@ -540,6 +741,13 @@ app.post('/api/extract-github', async (req, res) => {
       top_languages: topLanguages,
     };
 
+    githubExtractCache.set(cacheKey, { expiresAt: Date.now() + 15 * 60 * 1000, data: profileData });
+    if (githubExtractCache.size > 200) {
+      const nowMs = Date.now();
+      for (const [key, value] of githubExtractCache) {
+        if (value.expiresAt < nowMs) githubExtractCache.delete(key);
+      }
+    }
     res.json({ profile: profileData });
   } catch (err: any) {
     console.error('Error in /api/extract-github:', err);
@@ -548,10 +756,11 @@ app.post('/api/extract-github', async (req, res) => {
 });
 
 // Stage 2: Master Profile Synthesizer
-app.post('/api/synthesize-profile', async (req, res) => {
+app.post('/api/synthesize-profile', requireSession, async (req, res) => {
   try {
     const { raw_github_data, extra_notes, ai_config } = req.body;
-    const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
+    const safeAiConfig = sanitizeAiConfig(req, ai_config);
+    const userId = (req as any).sessionUserId;
 
     // Enforce Quota (3 free tries, then 1 USDT on TON Network daily pass)
     try {
@@ -656,8 +865,8 @@ ${JSON.stringify(
       const result = await executeUnifiedAI(systemPrompt, userPrompt, {
         provider: ai_config?.provider,
         model: ai_config?.model,
-        customBaseUrl: ai_config?.customBaseUrl,
-        customApiKey: ai_config?.customApiKey,
+        customBaseUrl: safeAiConfig?.customBaseUrl,
+        customApiKey: safeAiConfig?.customApiKey,
         temperature: ai_config?.temperature ?? 0.2,
       });
       parsedProfile = cleanJsonResponse(result.text);
@@ -687,7 +896,7 @@ ${JSON.stringify(
 });
 
 // Stage 3 Helper: Fetch and analyze job opportunity from Web URL (Single Job or Careers Directory)
-app.post('/api/fetch-job-from-url', async (req, res) => {
+app.post('/api/fetch-job-from-url', requireSession, strictRateLimit, async (req, res) => {
   try {
     const { url, candidate_profile, ai_config } = req.body;
 
@@ -699,6 +908,8 @@ app.post('/api/fetch-job-from-url', async (req, res) => {
     if (!/^https?:\/\//i.test(trimmedUrl)) {
       trimmedUrl = `https://${trimmedUrl}`;
     }
+    // SSRF guard (#7): only public https origins may be fetched.
+    trimmedUrl = (await assertSafePublicUrl(trimmedUrl)).toString();
 
     console.log(`[Job URL Parser] Fetching content from: ${trimmedUrl}`);
 
@@ -707,16 +918,27 @@ app.post('/api/fetch-job-from-url', async (req, res) => {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 9000);
 
-      const response = await fetch(trimmedUrl, {
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          Accept:
-            'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.9',
-        },
-        signal: controller.signal,
-      });
+      const fetchJobPage = (target: string) =>
+        fetch(target, {
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            Accept:
+              'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+          },
+          redirect: 'manual',
+          signal: controller.signal,
+        });
+
+      // Follow redirects manually, re-validating every hop against the SSRF guard.
+      let response = await fetchJobPage(trimmedUrl);
+      for (let hop = 0; hop < 3 && response.status >= 300 && response.status < 400; hop++) {
+        const location = response.headers.get('location');
+        if (!location) break;
+        trimmedUrl = (await assertSafePublicUrl(new URL(location, trimmedUrl).toString())).toString();
+        response = await fetchJobPage(trimmedUrl);
+      }
 
       clearTimeout(timeoutId);
 
@@ -758,7 +980,7 @@ app.post('/api/fetch-job-from-url', async (req, res) => {
       cleanText,
       { sourceType: 'url', url: trimmedUrl },
       candidate_profile,
-      ai_config
+      sanitizeAiConfig(req, ai_config)
     );
 
     res.json({
@@ -777,7 +999,7 @@ app.post('/api/fetch-job-from-url', async (req, res) => {
 });
 
 // Stage 3 Helper: Parse and extract job opportunity from uploaded Document (PDF or TXT)
-app.post('/api/parse-job-document', async (req, res) => {
+app.post('/api/parse-job-document', requireSession, async (req, res) => {
   try {
     const { file_name, file_type, file_base64, file_text, candidate_profile, ai_config } = req.body;
 
@@ -809,7 +1031,7 @@ app.post('/api/parse-job-document', async (req, res) => {
       extractedText,
       { sourceType: 'document', fileName: file_name || 'job_description_document' },
       candidate_profile,
-      ai_config
+      sanitizeAiConfig(req, ai_config)
     );
 
     res.json({
@@ -827,7 +1049,7 @@ app.post('/api/parse-job-document', async (req, res) => {
   }
 });
 
-app.post('/api/analyze-resume', async (req, res) => {
+app.post('/api/analyze-resume', requireSession, async (req, res) => {
   try {
     const { file_name, file_type, file_base64, file_text, ai_config } = req.body;
     if (!file_name || (!file_base64 && !file_text)) {
@@ -851,7 +1073,7 @@ app.post('/api/analyze-resume', async (req, res) => {
       return res.status(400).json({ error: 'Could not extract readable text from the uploaded resume.' });
     }
 
-    const analysis = await analyzeResumeText(extractedText, file_name, ai_config);
+    const analysis = await analyzeResumeText(extractedText, file_name, sanitizeAiConfig(req, ai_config));
     res.json({ analysis, source_text: extractedText, meta: { file_name, extracted_chars: extractedText.length } });
   } catch (err: any) {
     const errorDesc = err?.message?.slice(0, 150) || 'Resume analysis failed.';
@@ -860,7 +1082,7 @@ app.post('/api/analyze-resume', async (req, res) => {
   }
 });
 
-app.post('/api/chat-about-resume', async (req, res) => {
+app.post('/api/chat-about-resume', requireSession, strictRateLimit, async (req, res) => {
   try {
     const { resume_text, messages, ai_config } = req.body;
     if (!resume_text || !Array.isArray(messages) || !messages.length) {
@@ -870,7 +1092,7 @@ app.post('/api/chat-about-resume', async (req, res) => {
     if (lastMessage?.role !== 'user' || typeof lastMessage.content !== 'string' || !lastMessage.content.trim()) {
       return res.status(400).json({ error: 'The latest chat message must be a non-empty user message.' });
     }
-    const reply = await chatAboutResume(resume_text, messages, ai_config);
+    const reply = await chatAboutResume(resume_text, messages, sanitizeAiConfig(req, ai_config));
     res.json({ reply });
   } catch (err: any) {
     const errorDesc = err?.message?.slice(0, 150) || 'Resume chat failed.';
@@ -879,13 +1101,13 @@ app.post('/api/chat-about-resume', async (req, res) => {
   }
 });
 
-app.post('/api/regenerate-resume', async (req, res) => {
+app.post('/api/regenerate-resume', requireSession, async (req, res) => {
   try {
     const { selected_resume_text, ai_config } = req.body;
     if (!selected_resume_text || typeof selected_resume_text !== 'string') {
       return res.status(400).json({ error: 'selected_resume_text is required.' });
     }
-    const regenerated_resume = await regenerateResumeText(selected_resume_text, ai_config);
+    const regenerated_resume = await regenerateResumeText(selected_resume_text, sanitizeAiConfig(req, ai_config));
     res.json({ regenerated_resume });
   } catch (err: any) {
     const errorDesc = err?.message?.slice(0, 150) || 'Resume regeneration failed.';
@@ -895,10 +1117,11 @@ app.post('/api/regenerate-resume', async (req, res) => {
 });
 
 // Stage 3: Job Matcher
-app.post('/api/match-job', async (req, res) => {
+app.post('/api/match-job', requireSession, async (req, res) => {
   try {
     const { master_profile, job_description, ai_config } = req.body;
-    const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
+    const safeAiConfig = sanitizeAiConfig(req, ai_config);
+    const userId = (req as any).sessionUserId;
 
     // Enforce Quota (3 free tries, then 1 USDT on TON Network daily pass)
     try {
@@ -983,8 +1206,8 @@ ${job_description}`;
       const result = await executeUnifiedAI(systemPrompt, userPrompt, {
         provider: ai_config?.provider,
         model: ai_config?.model,
-        customBaseUrl: ai_config?.customBaseUrl,
-        customApiKey: ai_config?.customApiKey,
+        customBaseUrl: safeAiConfig?.customBaseUrl,
+        customApiKey: safeAiConfig?.customApiKey,
         temperature: ai_config?.temperature ?? 0.2,
       });
       parsedMatch = cleanJsonResponse(result.text);
@@ -1014,10 +1237,11 @@ ${job_description}`;
 });
 
 // Stage 4: Tailored Resume Generator & ATS Output
-app.post('/api/generate-tailored-resume', async (req, res) => {
+app.post('/api/generate-tailored-resume', requireSession, async (req, res) => {
   try {
     const { master_profile, job_description, match_analysis, contact_info, ai_config } = req.body;
-    const userId = (req.headers['x-user-id'] as string) || req.body.user_id || 'guest_user_default';
+    const safeAiConfig = sanitizeAiConfig(req, ai_config);
+    const userId = (req as any).sessionUserId;
 
     // Enforce Quota (3 free tries, then 1 USDT on TON Network daily pass)
     try {
@@ -1157,8 +1381,8 @@ ${JSON.stringify(match_analysis, null, 2)}`;
       const result = await executeUnifiedAI(systemPrompt, userPrompt, {
         provider: ai_config?.provider,
         model: ai_config?.model,
-        customBaseUrl: ai_config?.customBaseUrl,
-        customApiKey: ai_config?.customApiKey,
+        customBaseUrl: safeAiConfig?.customBaseUrl,
+        customApiKey: safeAiConfig?.customApiKey,
         temperature: ai_config?.temperature ?? 0.2,
       });
       parsedResume = cleanJsonResponse(result.text);
@@ -1215,6 +1439,14 @@ async function startServer() {
     });
   }
 
+  // Flush pending debounced database writes on shutdown (#10).
+  const shutdown = (signal: string) => {
+    console.log('[Server] ' + signal + ' received, flushing pending database writes.');
+    void flushNow().finally(() => process.exit(0));
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Self-Analyzer AI Agent server running on http://0.0.0.0:${PORT}`);
     startTelegramBot();
@@ -1222,3 +1454,4 @@ async function startServer() {
 }
 
 startServer();
+
