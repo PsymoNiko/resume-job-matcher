@@ -36,6 +36,17 @@ interface BotSession {
 }
 
 const sessions = new Map<number, BotSession>();
+
+// Bound the session cache so stored resume texts cannot accumulate forever (#11).
+const MAX_BOT_SESSIONS = 200;
+function rememberSession(chatId: number, session: BotSession) {
+  sessions.set(chatId, session);
+  while (sessions.size > MAX_BOT_SESSIONS) {
+    const oldestKey = sessions.keys().next().value;
+    if (oldestKey === undefined || oldestKey === chatId) break;
+    sessions.delete(oldestKey);
+  }
+}
 let polling = false;
 const mainKeyboard = {
   keyboard: [
@@ -90,7 +101,7 @@ async function sendMessage(token: string, chatId: number, text: string, replyMar
 async function appApi<T>(path: string, body: Record<string, unknown> | undefined, userId: string): Promise<T> {
   const response = await fetch(`http://127.0.0.1:${process.env.PORT || 3000}${path}`, {
     method: body ? 'POST' : 'GET',
-    headers: { 'Content-Type': 'application/json', 'x-user-id': userId },
+    headers: { 'Content-Type': 'application/json', 'x-user-id': userId, 'x-internal-token': process.env.INTERNAL_API_TOKEN || '' },
     ...(body ? { body: JSON.stringify({ ...body, user_id: userId }) } : {}),
   });
   const data = await response.json() as T & { error?: string; message?: string };
@@ -103,7 +114,7 @@ function getSession(chatId: number, userId = String(chatId)): BotSession {
   const existing = sessions.get(chatId);
   if (existing) return existing;
   const created: BotSession = { userId, decisions: {}, messages: [] };
-  sessions.set(chatId, created);
+  rememberSession(chatId, created);
   return created;
 }
 
@@ -420,7 +431,7 @@ async function handleUpdate(token: string, update: TelegramUpdate) {
         decisions: {},
         messages: [{ role: 'assistant', content: 'Resume analysis completed.' }],
       };
-      sessions.set(chatId, resumeSession);
+      rememberSession(chatId, resumeSession);
       await sendMessage(token, chatId, reviewText(resumeSession), lineKeyboard(resumeSession));
     } catch (error: any) {
       await sendMessage(token, chatId, `I could not analyze that resume: ${error.message}`);

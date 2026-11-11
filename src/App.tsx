@@ -104,6 +104,7 @@ export default function App() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
+              init_data: (window as any)?.Telegram?.WebApp?.initData || '',
               telegram_id: tgUser.id,
               first_name: tgUser.first_name,
               last_name: tgUser.last_name,
@@ -139,7 +140,15 @@ export default function App() {
   const [aiConfig, setAiConfig] = useState<AIConfigSettings>(() => {
     try {
       const saved = localStorage.getItem('resume_job_matcher_ai_config');
-      return saved ? JSON.parse(saved) : { provider: 'deepseek', model: 'deepseek-chat', temperature: 0.2 };
+      if (!saved) return { provider: 'deepseek', model: 'deepseek-chat', temperature: 0.2 };
+      // Never keep AI API keys in localStorage (#9): strip any legacy stored key.
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object') delete parsed.customApiKey;
+        return parsed;
+      } catch {
+        return { provider: 'deepseek', model: 'deepseek-chat', temperature: 0.2 };
+      }
     } catch {
       return { provider: 'deepseek', model: 'deepseek-chat', temperature: 0.2 };
     }
@@ -1205,8 +1214,10 @@ export default function App() {
         adminUserId={currentUser?.id || localStorage.getItem('resume_job_matcher_auth_token') || undefined}
         onSaveConfig={(newConfig) => {
           setAiConfig(newConfig);
+          // Do not persist AI API keys in localStorage (#9).
+          const { customApiKey: _strippedKey, ...persistable } = newConfig;
           try {
-            localStorage.setItem('resume_job_matcher_ai_config', JSON.stringify(newConfig));
+            localStorage.setItem('resume_job_matcher_ai_config', JSON.stringify(persistable));
           } catch {}
           addLog(1, `AI Model configuration updated to ${newConfig.provider.toUpperCase()} (${newConfig.model}).`, 'success');
         }}

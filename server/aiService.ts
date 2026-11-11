@@ -577,6 +577,17 @@ export async function executeUnifiedAI(
   userPrompt: string,
   options?: AIExecutionOptions
 ): Promise<UnifiedGenerationResult> {
+  // Outbound endpoint guard (#7): custom AI base URLs must be well-formed
+  // http(s) URLs without embedded credentials.
+  if (options?.customBaseUrl) {
+    try {
+      const u = new URL(options.customBaseUrl);
+      if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error('bad protocol');
+      if (u.username || u.password) throw new Error('credentials not allowed');
+    } catch {
+      throw new Error('Invalid custom AI base URL.');
+    }
+  }
   const configuredProvider = process.env.AI_DEFAULT_PROVIDER as AIProvider | undefined;
   const enabledProviders = (process.env.AI_ENABLED_PROVIDERS || '')
     .split(',')
